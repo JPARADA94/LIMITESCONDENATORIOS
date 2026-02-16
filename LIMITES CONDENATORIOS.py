@@ -2,7 +2,7 @@
 # Autor: Javier Parada
 # Entrada: Excel TAL CUAL viene de SmartAssintence (formato ARCHIVO 2)
 # Llave de análisis: COMPONENTE
-# Salida: Excel con límite de precaución por variable
+# Salida: Excel con límites de Precaución y Condenatorio (Alerta)
 
 import streamlit as st
 import pandas as pd
@@ -12,15 +12,14 @@ from io import BytesIO
 # =========================
 # Configuración
 # =========================
-st.set_page_config(page_title="Límites de precaución por componente", layout="wide")
-st.title("Límites de precaución por componente")
+st.set_page_config(page_title="Límites por componente", layout="wide")
+st.title("Límites por componente")
 
 st.markdown("""
-Esta herramienta calcula el límite de precaución por componente a partir del histórico del archivo exportado desde SmartAssintence.
-Puedes aplicar filtros opcionales por operación, tipo de equipo, lubricante y fechas. Luego eliges el modo de cálculo:
-límites por componente o un único límite mezclando dos componentes. El cálculo se realiza únicamente con las variables definidas en la guía
-del reporte. Si existe la columna de estado de la variable, puedes excluir del cálculo los registros en alerta. Finalmente, descargas
-los resultados en Excel.
+Esta herramienta calcula límites de **precaución** y **condenatorio (alerta)** por componente con base en el histórico del archivo exportado desde SmartAssintence.
+Puedes aplicar filtros opcionales por operación, tipo de equipo, lubricante y fechas. Luego eliges el modo de cálculo: límites por componente o un único límite
+mezclando dos componentes. El cálculo se realiza únicamente con las variables definidas en la guía del reporte. Si existe la columna de estado de la variable,
+puedes excluir del cálculo los registros en alerta. Finalmente, descargas los resultados en Excel.
 """)
 
 # =========================
@@ -48,7 +47,7 @@ def first_non_null(series: pd.Series):
 
 def build_var_to_status(df: pd.DataFrame) -> dict:
     """
-    En ARCHIVO 2 las columnas de estado vienen como:
+    En ARCHIVO 2 las columnas de estado suelen venir como:
     'COBRE (CU) - 25 - Estado '
     """
     mapping = {}
@@ -130,33 +129,24 @@ col_lubricante = "PRODUCTO" if "PRODUCTO" in df.columns else None
 
 var_to_status = build_var_to_status(df)
 
-# =========================
-# Validación: asegurar que existan columnas de la guía
-# =========================
+# Variables disponibles (según guía) que sí existen en el archivo
 available = set(df.columns)
-vars_by_cat = {}
-missing_by_cat = {}
-
-for cat, vlist in GUIDE_VARS.items():
-    exist = [v for v in vlist if v in available]
-    miss = [v for v in vlist if v not in available]
-    vars_by_cat[cat] = exist
-    missing_by_cat[cat] = miss
-
+vars_by_cat = {cat: [v for v in vlist if v in available] for cat, vlist in GUIDE_VARS.items()}
 total_exist = sum(len(v) for v in vars_by_cat.values())
 if total_exist == 0:
     st.error(
         "No se encontró ninguna variable de la guía en el archivo. "
-        "Esto normalmente ocurre cuando el Excel no es el export estándar de SmartAssintence (formato ARCHIVO 2)."
+        "Verifica que sea el export estándar de SmartAssintence (formato ARCHIVO 2)."
     )
     st.stop()
 
 with st.expander("Revisión de variables encontradas", expanded=False):
     for cat in vars_by_cat:
         st.write(f"**{cat}** — encontradas: {len(vars_by_cat[cat])} / {len(GUIDE_VARS[cat])}")
-        if missing_by_cat[cat]:
-            st.caption("No encontradas (siempre que el export cambie, estas pueden variar):")
-            st.write(missing_by_cat[cat])
+        miss = [v for v in GUIDE_VARS[cat] if v not in available]
+        if miss:
+            st.caption("No encontradas (puede variar si el export cambió):")
+            st.write(miss)
 
 # =========================
 # 1) Filtros opcionales
@@ -180,7 +170,6 @@ if usar_fechas:
                     (df_f["FECHA_INFORME"] <= pd.to_datetime(fin))].copy()
 
 c1, c2, c3 = st.columns(3)
-
 with c1:
     usar_operacion = st.checkbox("Filtrar por operación", value=False, disabled=(col_operacion is None))
     if usar_operacion and col_operacion:
@@ -207,7 +196,7 @@ if df_f.empty:
     st.stop()
 
 # =========================
-# 2) Inventario de componentes
+# 2) Inventario
 # =========================
 st.markdown("## 2. Inventario de componentes")
 
@@ -226,7 +215,6 @@ inventario = (
         .reset_index()
         .sort_values("Muestras", ascending=False)
 )
-
 st.dataframe(inventario, use_container_width=True)
 
 # =========================
@@ -236,10 +224,7 @@ st.markdown("## 3. Modo de cálculo")
 
 modo = st.radio(
     "Selecciona el modo",
-    options=[
-        "Límites por componente",
-        "Límite único mezclando dos componentes"
-    ],
+    options=["Límites por componente", "Límite único mezclando dos componentes"],
     index=0
 )
 
@@ -254,11 +239,7 @@ if not componentes:
     st.stop()
 
 if modo == "Límites por componente":
-    comps_sel = st.multiselect(
-        "Componentes a analizar",
-        options=componentes,
-        default=componentes[:1]
-    )
+    comps_sel = st.multiselect("Componentes a analizar", options=componentes, default=componentes[:1])
     if not comps_sel:
         st.warning("Selecciona al menos un componente.")
         st.stop()
@@ -283,7 +264,7 @@ if df_calc.empty:
     st.stop()
 
 # =========================
-# 5) Variables para cálculo (solo las encontradas)
+# 5) Variables
 # =========================
 st.markdown("## 5. Variables para el cálculo")
 
@@ -299,8 +280,8 @@ def render_cat(title: str, vars_list: list, expanded: bool):
         cols = st.columns(3)
         for i, v in enumerate(vars_list):
             with cols[i % 3]:
-                current = v in st.session_state["vars_checked"]
-                val = st.checkbox(v, value=current, key=f"chk_{title}_{v}")
+                cur = v in st.session_state["vars_checked"]
+                val = st.checkbox(v, value=cur, key=f"chk_{title}_{v}")
                 if val:
                     st.session_state["vars_checked"].add(v)
                 else:
@@ -318,19 +299,24 @@ if not vars_sel:
 
 st.success(f"Variables seleccionadas: {len(vars_sel)}")
 
-# Convertir a numérico
 for v in vars_sel:
     df_calc[v] = convert_numeric(df_calc[v])
 
 # =========================
-# 6) Parámetros
+# 6) Parámetros de cálculo
 # =========================
 st.markdown("## 6. Parámetros de cálculo")
 
 min_n = st.number_input("Mínimo de datos válidos para calcular", min_value=2, value=3, step=1)
-n_switch = st.number_input("Umbral para usar percentil", min_value=3, value=10, step=1)
-p_prec = st.slider("Percentil de precaución", 50, 99, 90, 1)
-k_sigma = st.number_input("Factor para histórico corto (media + k·desviación)", min_value=0.0, value=2.0, step=0.5)
+
+cA, cB = st.columns(2)
+with cA:
+    n_switch = st.number_input("Umbral para usar percentiles", min_value=3, value=10, step=1)
+    p_prec = st.slider("Percentil de precaución", 50, 99, 90, 1)
+    p_alert = st.slider("Percentil de condenatorio (alerta)", 50, 99, 95, 1)
+with cB:
+    k_prec = st.number_input("Factor para precaución con histórico corto", min_value=0.0, value=2.0, step=0.5)
+    k_alert = st.number_input("Factor para condenatorio con histórico corto", min_value=0.0, value=3.0, step=0.5)
 
 def apply_status_filter(df_in: pd.DataFrame, var: str) -> pd.Series:
     s = df_in[var]
@@ -342,29 +328,41 @@ def apply_status_filter(df_in: pd.DataFrame, var: str) -> pd.Series:
     estado = df_in[status_col].astype(str).str.strip().str.upper()
     return s[estado != "ALERTA"]
 
-def calc_precaution(series: pd.Series) -> dict:
+def calc_limits(series: pd.Series) -> dict:
     s = series.dropna()
     n = int(len(s))
     if n < min_n:
-        return {"n": n, "metodo": "Insuficiente", "prec": np.nan, "mean": np.nan, "std": np.nan, "median": np.nan}
-    if n >= n_switch:
         return {
             "n": n,
-            "metodo": f"Percentil P{p_prec}",
-            "prec": float(s.quantile(p_prec / 100)),
-            "mean": float(s.mean()),
-            "std": float(s.std(ddof=1)) if n > 1 else 0.0,
-            "median": float(s.median())
+            "metodo": "Insuficiente",
+            "prec": np.nan,
+            "alert": np.nan,
+            "mean": np.nan,
+            "std": np.nan,
+            "median": np.nan
         }
+
     mean = float(s.mean())
     std = float(s.std(ddof=1)) if n > 1 else 0.0
+    median = float(s.median())
+
+    if n >= n_switch:
+        prec = float(s.quantile(p_prec / 100))
+        alert = float(s.quantile(p_alert / 100))
+        metodo = f"Percentiles P{p_prec} y P{p_alert}"
+    else:
+        prec = mean + (k_prec * std)
+        alert = mean + (k_alert * std)
+        metodo = "Media y desviación"
+
     return {
         "n": n,
-        "metodo": "Media y desviación",
-        "prec": mean + (k_sigma * std),
+        "metodo": metodo,
+        "prec": prec,
+        "alert": alert,
         "mean": mean,
         "std": std,
-        "median": float(s.median())
+        "median": median
     }
 
 def get_category(var: str) -> str:
@@ -378,14 +376,14 @@ def get_category(var: str) -> str:
 # =========================
 st.markdown("## 7. Resultados y descarga")
 
-if st.button("Calcular límite de precaución"):
+if st.button("Calcular límites"):
     filas = []
 
     if modo == "Límites por componente":
         for comp, g in df_calc.groupby(df_calc["COMPONENTE"].astype(str)):
             for var in vars_sel:
                 serie = apply_status_filter(g, var)
-                out = calc_precaution(serie)
+                out = calc_limits(serie)
 
                 filas.append({
                     "Operación": first_non_null(g[col_operacion]) if col_operacion else None,
@@ -397,6 +395,7 @@ if st.button("Calcular límite de precaución"):
                     "Datos válidos": out["n"],
                     "Método": out["metodo"],
                     "Límite de precaución": out["prec"],
+                    "Límite condenatorio": out["alert"],
                     "Promedio": out["mean"],
                     "Desviación estándar": out["std"],
                     "Mediana": out["median"],
@@ -411,7 +410,7 @@ if st.button("Calcular límite de precaución"):
 
         for var in vars_sel:
             serie = apply_status_filter(df_calc, var)
-            out = calc_precaution(serie)
+            out = calc_limits(serie)
 
             filas.append({
                 "Componentes mezclados": etiqueta,
@@ -420,6 +419,7 @@ if st.button("Calcular límite de precaución"):
                 "Datos válidos": out["n"],
                 "Método": out["metodo"],
                 "Límite de precaución": out["prec"],
+                "Límite condenatorio": out["alert"],
                 "Promedio": out["mean"],
                 "Desviación estándar": out["std"],
                 "Mediana": out["median"],
@@ -432,7 +432,7 @@ if st.button("Calcular límite de precaución"):
 
     dec = st.number_input("Decimales para visualización", min_value=0, value=0, step=1)
     vista = resultados.copy()
-    for c in ["Límite de precaución", "Promedio", "Desviación estándar", "Mediana"]:
+    for c in ["Límite de precaución", "Límite condenatorio", "Promedio", "Desviación estándar", "Mediana"]:
         if c in vista.columns:
             vista[c] = pd.to_numeric(vista[c], errors="coerce").round(dec)
 
@@ -440,14 +440,16 @@ if st.button("Calcular límite de precaución"):
         orden = [
             "Operación", "Tipo de equipo", "Lubricante",
             "Componente", "Categoría", "Variable",
-            "Datos válidos", "Método", "Límite de precaución",
+            "Datos válidos", "Método",
+            "Límite de precaución", "Límite condenatorio",
             "Promedio", "Desviación estándar", "Mediana",
             "Primera fecha", "Última fecha", "Excluye alerta"
         ]
     else:
         orden = [
             "Componentes mezclados", "Categoría", "Variable",
-            "Datos válidos", "Método", "Límite de precaución",
+            "Datos válidos", "Método",
+            "Límite de precaución", "Límite condenatorio",
             "Promedio", "Desviación estándar", "Mediana",
             "Primera fecha", "Última fecha", "Excluye alerta"
         ]
@@ -456,7 +458,7 @@ if st.button("Calcular límite de precaución"):
     st.dataframe(vista[columnas], use_container_width=True)
 
     bytes_xlsx = to_excel_bytes(vista[columnas], sheet_name="Límites")
-    filename = "limites_precaucion_por_componente.xlsx" if modo == "Límites por componente" else "limites_precaucion_mezcla_componentes.xlsx"
+    filename = "limites_por_componente.xlsx" if modo == "Límites por componente" else "limites_mezcla_componentes.xlsx"
 
     st.download_button(
         "Descargar Excel",
@@ -465,7 +467,9 @@ if st.button("Calcular límite de precaución"):
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 else:
-    st.info("Aplica filtros, selecciona el modo, elige componentes y variables, y luego calcula el límite.")
+    st.info("Aplica filtros, selecciona el modo, elige componentes y variables, y luego calcula los límites.")
+
+
 
 
 
