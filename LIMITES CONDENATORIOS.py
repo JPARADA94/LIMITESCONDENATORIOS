@@ -1,30 +1,23 @@
 # limites_condenatorios.py
 # Autor: Javier Parada
-# Entrada: Excel TAL CUAL viene de SmartAssintence (no se modifica el archivo)
+# Entrada: Excel TAL CUAL viene de SmartAssintence
 #
-# Cambios solicitados:
-# ✅ 1) Los 3 filtros (Operación / Tipo equipo / Lubricante) son OPCIONALES (se activan con checkbox).
-# ✅ 2) Selección de variables por “chulos” (checkboxes), no por lista.
-# ✅ 3) Orden: FILTROS -> INVENTARIO -> seleccionar EQUIPOS -> seleccionar VARIABLES -> calcular.
-# ✅ 4) Descargar resultado en EXCEL (.xlsx).
-# ✅ 5) Inventario siempre visible (si hay datos).
+# CAMBIO CLAVE:
+# - Ya NO se trabaja por EQUIPO.
+# - Se trabaja por COMPONENTE (cada COMPONENTE es el que se consolida y se le calculan límites).
 
 import streamlit as st
 import pandas as pd
 import numpy as np
 from io import BytesIO
 
-# =========================
-# Configuración
-# =========================
-st.set_page_config(page_title="Límites Condenatorios - por Equipo", layout="wide")
-st.title("📏 Límites Condenatorios por Equipo (Histórico)")
+st.set_page_config(page_title="Límites Condenatorios - por COMPONENTE", layout="wide")
+st.title("📏 Límites Condenatorios por COMPONENTE (Histórico)")
 
 st.markdown("""
-Esta app calcula **límites de Precaución y Condenatorio por equipo**, usando únicamente **variables “lógicas”** (las que vienen en pareja:
-`<Variable>` y `<Variable> - Estado`).  
-Opcionalmente puedes filtrar por **Operación**, **Tipo de equipo** y **Lubricante**.  
-También puedes decidir si deseas **excluir del cálculo** los registros donde la variable esté en **ALERTA** (según su columna `- Estado`).
+Esta app calcula **límites de Precaución y Condenatorio por COMPONENTE**, usando variables numéricas del Excel de SmartAssintence.
+Puedes filtrar (opcional) por **Operación**, **Tipo de equipo** y **Lubricante**. Luego seleccionas los **COMPONENTES** y las **variables**
+a evaluar. Si una variable tiene su columna **`<Variable> - Estado`**, puedes excluir del cálculo los registros en **ALERTA**.
 """)
 
 # --------------------
@@ -34,8 +27,11 @@ También puedes decidir si deseas **excluir del cálculo** los registros donde l
 def load_excel(file) -> pd.DataFrame:
     return pd.read_excel(file)
 
-def normalize_estado_colname(s: str) -> str:
-    return str(s).replace(" - Estado ", " - Estado").strip()
+def to_excel_bytes(df_export: pd.DataFrame, sheet_name: str = "Limites") -> bytes:
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df_export.to_excel(writer, index=False, sheet_name=sheet_name)
+    return output.getvalue()
 
 def clean_outliers_iqr(x: pd.Series) -> pd.Series:
     x = x.dropna()
@@ -47,11 +43,76 @@ def clean_outliers_iqr(x: pd.Series) -> pd.Series:
     hi = q3 + 1.5 * iqr
     return x[(x >= lo) & (x <= hi)]
 
-def to_excel_bytes(df_export: pd.DataFrame, sheet_name: str = "Limites") -> bytes:
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df_export.to_excel(writer, index=False, sheet_name=sheet_name)
-    return output.getvalue()
+def convert_numeric(series: pd.Series) -> pd.Series:
+    return pd.to_numeric(
+        series.astype(str).str.replace(r"[^0-9\.\-]", "", regex=True),
+        errors="coerce"
+    )
+
+def build_candidates(df: pd.DataFrame) -> tuple[list, dict]:
+    """
+    Variables “lógicas” = candidatas numéricas/convertibles que sí valen para límites.
+    Excluye metadatos típicos y columnas '- Estado'. Si existe '<var> - Estado', se registra para filtro de ALERTA.
+    """
+    cols = list(df.columns)
+
+    # Mapeo var -> columna "<var> - Estado"
+    estado_cols = [c for c in cols if " - Estado" in str(c)]
+    var_to_estado = {}
+    for c_estado in estado_cols:
+        base = str(c_estado).replace(" - Estado ", " - Estado").replace(" - Estado", "").strip()
+        if base in df.columns:
+            var_to_estado[base] = c_estado
+
+    # Excluir metadatos típicos (ajusta aquí si tu SmartAssintence trae otros nombres)
+    exclude_exact = {
+        "COMPONENTE", "FECHA_INFORME",
+        "NOMBRE_CLIENTE", "CLIENTE",
+        "NOMBRE_OPERACION", "OPERACION",
+        "TIPO_EQUIPO",
+        "PRODUCTO", "Tested Lubricant",
+        "ESTADO_REPORTE", "Report Status",
+        "CORRELATIVO", "N_MUESTRA",
+        "Sample Bottle ID", "Asset ID", "EQUIPO"
+    }
+
+    candidates = []
+    for c in cols:
+        cs = str(c)
+        low = cs.lower()
+
+        if c in exclude_exact:
+            continue
+        if " - Estado" in cs:
+            continue
+
+        # Excluir nombres que parezcan IDs / llaves / textos “administrativos”
+        if any(k in low for k in ["id", "codigo", "código", "serial", "placa", "bottle", "sample", "coment", "observ"]):
+            continue
+
+        # Incluir numéricas
+        if pd.api.types.is_numeric_dtype(df[c]):
+            candidates.append(c)
+            continue
+
+        # Incluir convertibles (si la mayoría de los valores contienen dígitos)
+        sample = df[c].dropna().astype(str).head(80)
+        if sample.empty:
+            continue
+        looks_numeric = (sample.str.contains(r"\d", regex=True).mean() >= 0.6)
+        if looks_numeric:
+            candidates.append(c)
+
+    # Prioriza variables que tienen "- Estado" (normalmente son “las importantes”)
+    with_estado = [c for c in candidates if c in var_to_estado]
+    without_estado = [c for c in candidates if c not in var_to_estado]
+    ordered = with_estado + without_estado
+
+    # Dedupe conservando orden
+    seen = set()
+    ordered = [x for x in ordered if not (x in seen or seen.add(x))]
+
+    return ordered, var_to_estado
 
 # --------------------
 # Carga
@@ -63,7 +124,7 @@ if not archivo:
 df = load_excel(archivo).copy()
 
 # Validaciones mínimas
-required_min = ["EQUIPO", "FECHA_INFORME"]
+required_min = ["COMPONENTE", "FECHA_INFORME"]
 missing = [c for c in required_min if c not in df.columns]
 if missing:
     st.error(f"❌ Falta(n) columna(s) mínima(s) requerida(s): {missing}")
@@ -74,42 +135,23 @@ if df["FECHA_INFORME"].isna().all():
     st.error("❌ FECHA_INFORME no tiene fechas válidas (NaT). Revisa el Excel.")
     st.stop()
 
-# Columnas opcionales (si existen)
+# Columnas opcionales para filtros
 col_op = "NOMBRE_OPERACION" if "NOMBRE_OPERACION" in df.columns else None
 col_tipo = "TIPO_EQUIPO" if "TIPO_EQUIPO" in df.columns else None
 col_lub = "PRODUCTO" if "PRODUCTO" in df.columns else ("Tested Lubricant" if "Tested Lubricant" in df.columns else None)
 
-# --------------------
-# Detectar variables lógicas (pares: Var y Var - Estado)
-# --------------------
-cols = [str(c) for c in df.columns]
-estado_cols = [c for c in cols if " - Estado" in c]
-
-logic_vars = []
-var_to_estado = {}
-for c_estado in estado_cols:
-    c_norm = normalize_estado_colname(c_estado)
-    base = c_norm.replace(" - Estado", "").strip()
-    if base in df.columns:
-        logic_vars.append(base)
-        var_to_estado[base] = c_estado  # nombre real
-
-# dedupe conservando orden
-seen = set()
-logic_vars = [v for v in logic_vars if not (v in seen or seen.add(v))]
-
-if not logic_vars:
-    st.error("❌ No se detectaron variables lógicas. Debe existir '<Variable>' y '<Variable> - Estado'.")
+# Variables candidatas “lógicas”
+logic_candidates, var_to_estado = build_candidates(df)
+if not logic_candidates:
+    st.error("❌ No encontré variables numéricas/convertibles candidatas para límites.")
     st.stop()
 
 # =========================
 # 1) FILTROS (opcionales)
 # =========================
 st.markdown("## 1) Filtros (opcionales)")
-
 df_f = df.copy()
 
-# Filtro fechas (opcional)
 use_dates = st.checkbox("Filtrar por rango de fechas", value=False)
 if use_dates:
     min_d = df_f["FECHA_INFORME"].min()
@@ -123,18 +165,15 @@ if use_dates:
             min_value=min_d.date(),
             max_value=max_d.date()
         )
-        df_f = df_f[
-            (df_f["FECHA_INFORME"] >= pd.to_datetime(d1)) &
-            (df_f["FECHA_INFORME"] <= pd.to_datetime(d2))
-        ].copy()
+        df_f = df_f[(df_f["FECHA_INFORME"] >= pd.to_datetime(d1)) &
+                    (df_f["FECHA_INFORME"] <= pd.to_datetime(d2))].copy()
 
 cA, cB, cC = st.columns(3)
 
 with cA:
     use_op = st.checkbox("Filtrar por Operación", value=False, disabled=(col_op is None))
     if col_op is None:
-        st.caption("No existe columna NOMBRE_OPERACION en el Excel.")
-    ops_sel = []
+        st.caption("No existe NOMBRE_OPERACION en el Excel.")
     if use_op and col_op:
         ops_sel = st.multiselect("Operación(es)", sorted(df_f[col_op].dropna().unique()))
         if ops_sel:
@@ -143,8 +182,7 @@ with cA:
 with cB:
     use_tipo = st.checkbox("Filtrar por Tipo de equipo", value=False, disabled=(col_tipo is None))
     if col_tipo is None:
-        st.caption("No existe columna TIPO_EQUIPO en el Excel.")
-    tipos_sel = []
+        st.caption("No existe TIPO_EQUIPO en el Excel.")
     if use_tipo and col_tipo:
         tipos_sel = st.multiselect("Tipo(s) de equipo", sorted(df_f[col_tipo].dropna().unique()))
         if tipos_sel:
@@ -153,8 +191,7 @@ with cB:
 with cC:
     use_lub = st.checkbox("Filtrar por Lubricante", value=False, disabled=(col_lub is None))
     if col_lub is None:
-        st.caption("No existe columna PRODUCTO / Tested Lubricant en el Excel.")
-    lubs_sel = []
+        st.caption("No existe PRODUCTO / Tested Lubricant en el Excel.")
     if use_lub and col_lub:
         lubs_sel = st.multiselect("Lubricante(s)", sorted(df_f[col_lub].dropna().unique()))
         if lubs_sel:
@@ -165,12 +202,12 @@ if df_f.empty:
     st.stop()
 
 # =========================
-# 2) INVENTARIO (siempre visible)
+# 2) INVENTARIO (post-filtros)
 # =========================
-st.markdown("## 2) Inventario de equipos (histórico disponible)")
+st.markdown("## 2) Inventario de COMPONENTES (post-filtros)")
+st.caption("Aquí se consolida cuántas muestras tiene cada COMPONENTE en el archivo (con los filtros aplicados).")
 
-# inventario con conteos válidos por variable lógica (para auditoría)
-group_cols = ["EQUIPO"]
+group_cols = ["COMPONENTE"]
 if col_op: group_cols.append(col_op)
 if col_tipo: group_cols.append(col_tipo)
 if col_lub: group_cols.append(col_lub)
@@ -178,71 +215,47 @@ if col_lub: group_cols.append(col_lub)
 inv = (
     df_f.groupby(group_cols, dropna=False)
         .agg(
-            muestras_totales=("EQUIPO", "size"),
+            muestras_totales=("COMPONENTE", "size"),
             fecha_min=("FECHA_INFORME", "min"),
             fecha_max=("FECHA_INFORME", "max"),
             ultima_muestra=("FECHA_INFORME", "max"),
         )
         .reset_index()
+        .sort_values("muestras_totales", ascending=False)
 )
-
-# Para no hacer el inventario enorme, mostramos n_validas solo de las primeras 10 variables por defecto
-# (igual el cálculo luego se hace SOLO con las que el usuario seleccione)
-max_vars_preview = 10
-preview_vars = logic_vars[:max_vars_preview]
-
-# Convertimos preview vars a numérico en memoria para conteo válido (sin cambiar archivo)
-df_inv_tmp = df_f.copy()
-for v in preview_vars:
-    df_inv_tmp[v] = pd.to_numeric(
-        df_inv_tmp[v].astype(str).str.replace(r"[^0-9\.\-]", "", regex=True),
-        errors="coerce"
-    )
-
-for v in preview_vars:
-    inv[f"n_validas_{v}"] = (
-        df_inv_tmp.groupby(group_cols, dropna=False)[v]
-                 .apply(lambda s: int(s.notna().sum()))
-                 .values
-    )
-
-# Orden por historial general (muestras_totales)
-inv = inv.sort_values(["muestras_totales"], ascending=False)
 
 st.dataframe(inv, use_container_width=True)
 
 # =========================
-# 3) Selección de EQUIPOS
+# 3) Selección de COMPONENTES
 # =========================
-st.markdown("## 3) Selecciona el/los equipo(s)")
+st.markdown("## 3) Selecciona el/los COMPONENTE(s)")
 
-equipos_disponibles = sorted(df_f["EQUIPO"].dropna().astype(str).unique())
-equipos_sel = st.multiselect(
-    "Equipo(s)",
-    options=equipos_disponibles,
-    default=equipos_disponibles[:1] if len(equipos_disponibles) > 0 else []
+componentes_disponibles = sorted(df_f["COMPONENTE"].dropna().astype(str).unique())
+componentes_sel = st.multiselect(
+    "COMPONENTE(s)",
+    options=componentes_disponibles,
+    default=componentes_disponibles[:1] if componentes_disponibles else []
 )
 
-if not equipos_sel:
-    st.warning("Selecciona al menos un equipo.")
+if not componentes_sel:
+    st.warning("Selecciona al menos un COMPONENTE.")
     st.stop()
 
-df_calc = df_f[df_f["EQUIPO"].astype(str).isin(set(map(str, equipos_sel)))].copy()
+df_calc = df_f[df_f["COMPONENTE"].astype(str).isin(set(map(str, componentes_sel)))].copy()
 if df_calc.empty:
-    st.warning("No hay registros para los equipos seleccionados con los filtros actuales.")
+    st.warning("No hay registros para los COMPONENTES seleccionados con los filtros actuales.")
     st.stop()
 
 # =========================
-# 4) Selección de VARIABLES por CHULOS
+# 4) Variables por CHULOS
 # =========================
 st.markdown("## 4) Selecciona variables a analizar (por chulos)")
 
-# Buscador rápido
 buscador = st.text_input("Buscar variable (opcional)", value="")
-vars_filtradas = [v for v in logic_vars if buscador.strip().lower() in v.lower()]
+vars_filtradas = [v for v in logic_candidates if buscador.strip().lower() in str(v).lower()]
 
-# Botones select all / none
-csel1, csel2, csel3 = st.columns([1, 1, 2])
+csel1, csel2, _ = st.columns([1, 1, 2])
 if "vars_checked" not in st.session_state:
     st.session_state["vars_checked"] = set()
 
@@ -254,14 +267,14 @@ with csel2:
     if st.button("🧹 Limpiar selección"):
         st.session_state["vars_checked"] = set()
 
-# Checkboxes en columnas para que sea rápido
+# checkboxes en columnas
 ncols = 3
 cols_ui = st.columns(ncols)
 for i, v in enumerate(vars_filtradas):
     col = cols_ui[i % ncols]
     with col:
         checked = v in st.session_state["vars_checked"]
-        new_val = st.checkbox(v, value=checked, key=f"chk_{v}")
+        new_val = st.checkbox(str(v), value=checked, key=f"chk_{v}")
         if new_val:
             st.session_state["vars_checked"].add(v)
         else:
@@ -274,19 +287,16 @@ if not vars_sel:
 
 st.info(f"Variables seleccionadas: {len(vars_sel)}")
 
-# Convertir a numérico SOLO las seleccionadas (en memoria)
+# convertir a numérico SOLO las seleccionadas (en memoria)
 for v in vars_sel:
-    df_calc[v] = pd.to_numeric(
-        df_calc[v].astype(str).str.replace(r"[^0-9\.\-]", "", regex=True),
-        errors="coerce"
-    )
+    df_calc[v] = convert_numeric(df_calc[v])
 
 # =========================
-# 5) Parámetros de cálculo + atípicos por estado
+# 5) Parámetros + filtro por estado
 # =========================
 st.markdown("## 5) Parámetros de cálculo")
 
-min_n = st.number_input("Mínimo de datos válidos por equipo (por variable) para calcular límites", min_value=2, value=3, step=1)
+min_n = st.number_input("Mínimo de datos válidos por COMPONENTE (por variable) para calcular límites", min_value=2, value=3, step=1)
 
 c1, c2 = st.columns(2)
 with c1:
@@ -297,10 +307,10 @@ with c2:
     k_prec = st.number_input("k Precaución (n < umbral): μ + k·σ", min_value=0.0, value=2.0, step=0.5)
     k_cond = st.number_input("k Condenatorio (n < umbral): μ + k·σ", min_value=0.0, value=3.0, step=0.5)
 
-st.markdown("### Filtro de atípicos por estado (según `<Variable> - Estado`)")
+st.markdown("### Filtro de atípicos por estado (si existe `<Variable> - Estado`)")
 
 excluir_alertas = st.checkbox("Excluir del cálculo los registros en ALERTA (por variable)", value=True)
-excluir_precaucion = st.checkbox("Excluir también los registros en PRECAUCIÓN (opcional)", value=False)
+excluir_precaucion = st.checkbox("Excluir también registros en PRECAUCIÓN (opcional)", value=False)
 limpieza_iqr = st.checkbox("Aplicar limpieza adicional IQR (después del filtro por estado)", value=False)
 
 def apply_estado_filter(g: pd.DataFrame, v: str) -> pd.Series:
@@ -367,19 +377,19 @@ def compute_limits(series: pd.Series) -> dict:
     }
 
 # =========================
-# 6) Calcular y mostrar
+# 6) Calcular + Descargar Excel
 # =========================
-st.markdown("## 6) Resultados (límites por equipo y variable)")
+st.markdown("## 6) Resultados")
 
 if st.button("🚀 Calcular límites"):
     rows = []
-    for equipo, g_eq in df_calc.groupby(df_calc["EQUIPO"].astype(str)):
+    for comp, g_comp in df_calc.groupby(df_calc["COMPONENTE"].astype(str)):
         for v in vars_sel:
-            serie_filtrada = apply_estado_filter(g_eq, v)
+            serie_filtrada = apply_estado_filter(g_comp, v)
             out = compute_limits(serie_filtrada)
 
             row = {
-                "EQUIPO": equipo,
+                "COMPONENTE": comp,
                 "VARIABLE": v,
                 "n": out["n"],
                 "metodo": out["metodo"],
@@ -390,54 +400,53 @@ if st.button("🚀 Calcular límites"):
                 "median": out["median"],
                 "min": out["min"],
                 "max": out["max"],
-                "fecha_min": g_eq["FECHA_INFORME"].min(),
-                "fecha_max": g_eq["FECHA_INFORME"].max(),
+                "fecha_min": g_comp["FECHA_INFORME"].min(),
+                "fecha_max": g_comp["FECHA_INFORME"].max(),
                 "excluye_ALERTA": "SI" if excluir_alertas else "NO",
                 "excluye_PRECAUCION": "SI" if excluir_precaucion else "NO",
                 "iqr": "SI" if limpieza_iqr else "NO",
+                "tiene_estado": "SI" if v in var_to_estado else "NO",
             }
 
-            # metadata (si existe)
-            if col_op and col_op in g_eq.columns:
-                row[col_op] = g_eq[col_op].dropna().iloc[0] if g_eq[col_op].notna().any() else None
-            if col_tipo and col_tipo in g_eq.columns:
-                row[col_tipo] = g_eq[col_tipo].dropna().iloc[0] if g_eq[col_tipo].notna().any() else None
-            if col_lub and col_lub in g_eq.columns:
-                row[col_lub] = g_eq[col_lub].dropna().iloc[0] if g_eq[col_lub].notna().any() else None
+            if col_op and col_op in g_comp.columns:
+                row[col_op] = g_comp[col_op].dropna().iloc[0] if g_comp[col_op].notna().any() else None
+            if col_tipo and col_tipo in g_comp.columns:
+                row[col_tipo] = g_comp[col_tipo].dropna().iloc[0] if g_comp[col_tipo].notna().any() else None
+            if col_lub and col_lub in g_comp.columns:
+                row[col_lub] = g_comp[col_lub].dropna().iloc[0] if g_comp[col_lub].notna().any() else None
 
             rows.append(row)
 
     res = pd.DataFrame(rows)
 
-    # Mostrar
     dec = st.number_input("Decimales para mostrar (solo visual)", min_value=0, value=0, step=1)
     res_show = res.copy()
     for c in ["precaucion", "condenatorio", "mean", "std", "median", "min", "max"]:
         res_show[c] = res_show[c].round(dec)
 
-    # orden de columnas
     cols_order = []
-    for c in ["EQUIPO", col_op, col_tipo, col_lub, "VARIABLE", "n", "metodo",
-              "precaucion", "condenatorio", "mean", "std", "median", "min", "max",
-              "fecha_min", "fecha_max", "excluye_ALERTA", "excluye_PRECAUCION", "iqr"]:
+    for c in ["COMPONENTE", col_op, col_tipo, col_lub, "VARIABLE", "tiene_estado",
+              "n", "metodo", "precaucion", "condenatorio",
+              "mean", "std", "median", "min", "max",
+              "fecha_min", "fecha_max",
+              "excluye_ALERTA", "excluye_PRECAUCION", "iqr"]:
         if c and c in res_show.columns:
             cols_order.append(c)
 
-    st.dataframe(res_show[cols_order].sort_values(["EQUIPO", "VARIABLE"]), use_container_width=True)
+    st.dataframe(res_show[cols_order].sort_values(["COMPONENTE", "VARIABLE"]), use_container_width=True)
 
-    # =========================
-    # 7) Descargar en EXCEL
-    # =========================
-    st.markdown("## 7) Descargar resultados")
+    st.markdown("### Descargar en Excel (.xlsx)")
     xlsx_bytes = to_excel_bytes(res_show[cols_order], sheet_name="Limites")
     st.download_button(
         "⬇️ Descargar Excel (.xlsx)",
         data=xlsx_bytes,
-        file_name="limites_condenatorios_por_equipo.xlsx",
+        file_name="limites_condenatorios_por_componente.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 else:
-    st.info("Configura filtros, equipos y variables, luego presiona **🚀 Calcular límites**.")
+    st.info("Aplica filtros si quieres, selecciona COMPONENTES y variables, luego presiona **🚀 Calcular límites**.")
+
+
 
 
 
