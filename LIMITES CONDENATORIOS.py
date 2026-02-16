@@ -20,6 +20,13 @@ Esta herramienta calcula límites de **precaución** y **condenatorio (alerta)**
 Puedes aplicar filtros opcionales por operación, tipo de equipo, lubricante y fechas. Luego eliges el modo de cálculo: límites por componente o un único límite
 mezclando dos componentes. El cálculo se realiza únicamente con las variables definidas en la guía del reporte. Si existe la columna de estado de la variable,
 puedes excluir del cálculo los registros en alerta. Finalmente, descargas los resultados en Excel.
+
+**Ejemplo de cálculo (dos métodos):**
+- **Método por percentiles (histórico suficiente):** si un componente tiene 20 datos de Hierro, el límite de **precaución** puede ser el **P90** y el límite de
+  **alerta** el **P95**. Esto significa que el 90% de los datos quedan por debajo del límite de precaución y el 95% por debajo del límite de alerta.
+  Por ejemplo, si P90=45 y P95=60, entonces **Precaución=45** y **Alerta=60**.
+- **Método por promedio y desviación (histórico corto):** si un componente tiene 6 datos de Hierro con promedio=10 y desviación=3, y el usuario define
+  k=2 para precaución y k=3 para alerta, entonces **Precaución = 10 + 2×3 = 16** y **Alerta = 10 + 3×3 = 19**.
 """)
 
 # =========================
@@ -468,6 +475,7 @@ if st.button("Calcular límites"):
     )
 else:
     st.info("Aplica filtros, selecciona el modo, elige componentes y variables, y luego calcula los límites.")
+
 
 
 
