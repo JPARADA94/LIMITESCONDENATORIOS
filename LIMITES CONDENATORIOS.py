@@ -32,7 +32,7 @@ puedes excluir del cálculo los registros en alerta. Finalmente, descargas los r
 with st.sidebar:
     st.markdown("## Aviso legal")
     st.info(
-        "© 2026 Javier Parada. Todos los derechos reservados.\n\n"
+        "© 2026. Todos los derechos reservados.\n\n"
         "Herramienta desarrollada para análisis técnico de lubricación.\n\n"
         "**Mobil™** es una marca registrada de **Exxon Mobil Corporation**. "
         "Este software es de uso interno/educativo y no está afiliado ni respaldado "
@@ -43,7 +43,7 @@ with st.sidebar:
 st.markdown(
     "<hr style='margin-top: 2rem; margin-bottom: 0.5rem;'>"
     "<div style='text-align:center; font-size: 0.85rem; color: #6b7280;'>"
-    "© 2026 Javier Parada • Uso interno • Mobil™ es marca registrada de Exxon Mobil Corporation"
+    "© 2026  • Uso interno • Mobil™ es marca registrada de Exxon Mobil Corporation"
     "</div>",
     unsafe_allow_html=True
 )
@@ -495,6 +495,7 @@ if st.button("Calcular límites"):
     )
 else:
     st.info("Aplica filtros, selecciona el modo, elige componentes y variables, y luego calcula los límites.")
+
 
 
 
