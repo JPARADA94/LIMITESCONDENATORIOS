@@ -1,7 +1,6 @@
 # limites_condenatorios.py
 # Autor: Javier Parada
 # Entrada: Excel TAL CUAL viene de SmartAssintence
-#
 # Llave de análisis: COMPONENTE
 # Salida: Excel con límites por componente y variable
 
@@ -9,6 +8,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from io import BytesIO
+import re
 
 # =========================
 # Configuración
@@ -17,11 +17,11 @@ st.set_page_config(page_title="Límites Condenatorios por Componente", layout="w
 st.title("Límites Condenatorios por Componente")
 
 st.markdown("""
-Esta herramienta calcula límites de precaución y condenatorio por componente a partir del histórico del archivo exportado desde SmartAssintence. 
-Puedes aplicar filtros opcionales por operación, tipo de equipo, lubricante y fechas. Luego revisas el inventario y seleccionas los componentes a analizar. 
-Después eliges las variables principales organizadas por categorías. Los límites se calculan con dos métodos según el tamaño del histórico: percentiles cuando 
-hay suficiente información y media más desviación cuando el histórico es corto. Si la variable cuenta con una columna de estado, puedes excluir del cálculo 
-los registros que estén en alerta. Al final descargas el consolidado en Excel.
+Esta herramienta calcula límites de precaución y condenatorio por componente usando el histórico del archivo exportado desde SmartAssintence.
+Puedes aplicar filtros opcionales por operación, tipo de equipo, lubricante y fechas. Luego revisas el inventario y seleccionas los componentes.
+Después eliges las variables principales organizadas por categorías. Los límites se calculan con dos métodos según la cantidad de datos:
+percentiles cuando hay histórico suficiente y media más desviación cuando el histórico es corto. Si la variable tiene una columna de estado,
+puedes excluir del cálculo los registros en alerta. Al final descargas el consolidado en Excel.
 """)
 
 # =========================
@@ -36,6 +36,13 @@ def to_excel_bytes(df_export: pd.DataFrame, sheet_name: str = "Resultados") -> b
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         df_export.to_excel(writer, index=False, sheet_name=sheet_name)
     return output.getvalue()
+
+def normalize_name(s: str) -> str:
+    """Normaliza nombres para comparar: lower, sin dobles espacios, sin sufijos tipo ' - 20'."""
+    txt = str(s).strip().lower()
+    txt = re.sub(r"\s+", " ", txt)
+    txt = re.sub(r"\s*-\s*\d+\s*$", "", txt)  # quita " - 20" al final
+    return txt
 
 def convert_numeric(series: pd.Series) -> pd.Series:
     return pd.to_numeric(
@@ -53,10 +60,73 @@ def clean_outliers_iqr(x: pd.Series) -> pd.Series:
     hi = q3 + 1.5 * iqr
     return x[(x >= lo) & (x <= hi)]
 
+# =========================
+# Clasificación alineada a SmartAssintence (estricta)
+# =========================
+# Nota: se comparan con normalize_name(), y por eso no importa si en tu archivo vienen como "COBRE (CU) - 25"
+PRIMARY_WEAR = [
+    "plata (ag)", "aluminio (al)", "cromo (cr)", "cobre (cu)", "hierro (fe)",
+    "índice pq", "indice pq", "pq index", "pqi",
+    "níquel (ni)", "niquel (ni)", "plomo (pb)", "estaño (sn)", "estano (sn)", "titanio (ti)"
+]
+
+PRIMARY_PROPERTIES = [
+    "número básico", "numero basico", "bn", "tbn",
+    "número ácido", "numero acido", "an", "tan",
+    "viscosidad a 40", "viscosidad a 100", "visc@40", "visc@100",
+    "oxidación", "oxidacion", "nitración", "nitracion", "sulfatación", "sulfatacion",
+    "oxidation", "nitration", "sulfation", "ab/cm"
+]
+
+PRIMARY_CONTAM = [
+    "agua", "water",
+    "hollín", "hollin", "soot",
+    "silicio", "silicon", "si (",
+    "sodio", "sodium", "na (",
+    "potasio", "potassium", "k (",
+    "glicol", "glycol",
+    "dilución por combustible", "dilucion por combustible", "fuel dilut", "fuel dilution",
+    "conteo partículas", "conteo particulas", "particle count", "iso 4406", "cleanliness"
+]
+
+PRIMARY_ADDITIVES = [
+    "calcio", "ca (", "magnesio", "mg (", "zinc", "zn (", "fósforo", "fosforo", "p (", "boro", "b ("
+]
+
+# Columnas que jamás deberían entrar a “variables lógicas”
+# (en tu captura estas se estaban colando)
+NAME_EXCLUDE_PATTERNS = [
+    "fecha", "ingreso", "recepcion", "recepción", "descriptor", "descrip", "descripcion", "descripción",
+    "observ", "coment", "cliente", "operacion", "operación", "lubricante", "producto", "estado reporte",
+    "componente",  # OJO: la llave ya la usamos aparte
+]
+
+def categorize_variable(var_name: str) -> str:
+    v = normalize_name(var_name)
+
+    # Exclusiones fuertes por nombre
+    if any(p in v for p in NAME_EXCLUDE_PATTERNS):
+        return "No usar"
+
+    # Estricto por tipo de variable
+    if any(k in v for k in PRIMARY_WEAR):
+        return "Desgaste"
+
+    if any(k in v for k in PRIMARY_PROPERTIES):
+        return "Propiedades del lubricante"
+
+    if any(k in v for k in PRIMARY_CONTAM):
+        return "Contaminantes"
+
+    if any(k in v for k in PRIMARY_ADDITIVES):
+        return "Aditivos"
+
+    return "Otras variables"
+
 def build_candidates(df: pd.DataFrame) -> tuple[list, dict]:
     cols = list(df.columns)
 
-    # Mapeo variable -> columna de estado
+    # Mapeo variable -> columna estado
     estado_cols = [c for c in cols if " - Estado" in str(c)]
     var_to_estado = {}
     for c_estado in estado_cols:
@@ -64,8 +134,8 @@ def build_candidates(df: pd.DataFrame) -> tuple[list, dict]:
         if base in df.columns:
             var_to_estado[base] = c_estado
 
-    # Excluir columnas de contexto y administrativas
-    exclude_exact = {
+    # Columnas de control que nunca deben ser variables
+    hard_exclude = {
         "COMPONENTE", "FECHA_INFORME",
         "NOMBRE_CLIENTE", "CLIENTE",
         "NOMBRE_OPERACION", "OPERACION",
@@ -73,163 +143,80 @@ def build_candidates(df: pd.DataFrame) -> tuple[list, dict]:
         "PRODUCTO", "Tested Lubricant",
         "ESTADO_REPORTE", "Report Status",
         "CORRELATIVO", "N_MUESTRA",
-        "Sample Bottle ID", "Asset ID", "EQUIPO"
+        "Sample Bottle ID", "Asset ID", "EQUIPO",
+        "DESCRIPTOR_COMPONENTE"
     }
 
     candidates = []
     for c in cols:
         cs = str(c)
-        low = cs.lower()
 
-        if c in exclude_exact:
+        if c in hard_exclude:
             continue
         if " - Estado" in cs:
             continue
-        if any(k in low for k in ["id", "codigo", "código", "serial", "placa", "bottle", "sample", "coment", "observ"]):
+
+        # Exclusión fuerte por nombre (evita FECHA_MUESTREO, FECHA_RECEPCION, etc.)
+        if any(p in normalize_name(cs) for p in NAME_EXCLUDE_PATTERNS):
             continue
 
+        # Excluir columnas datetime
+        if pd.api.types.is_datetime64_any_dtype(df[c]):
+            continue
+
+        # Aceptar numéricas puras
         if pd.api.types.is_numeric_dtype(df[c]):
             candidates.append(c)
             continue
 
-        sample = df[c].dropna().astype(str).head(80)
+        # Aceptar convertibles a numérico si la mayoría parecen números
+        sample = df[c].dropna().astype(str).head(120)
         if sample.empty:
             continue
-        if (sample.str.contains(r"\d", regex=True).mean() >= 0.6):
-            candidates.append(c)
 
+        # Si la mayoría no contiene dígitos, es texto -> fuera
+        digit_rate = sample.str.contains(r"\d", regex=True).mean()
+        if digit_rate < 0.6:
+            continue
+
+        # Si casi todo es único y largo, suele ser texto/ID -> fuera
+        uniq_rate = sample.nunique() / max(1, len(sample))
+        avg_len = sample.str.len().mean()
+        if uniq_rate > 0.95 and avg_len > 18:
+            continue
+
+        candidates.append(c)
+
+    # Dedupe conservando orden
     seen = set()
     candidates = [x for x in candidates if not (x in seen or seen.add(x))]
     return candidates, var_to_estado
 
-def _n(s: str) -> str:
-    return str(s).strip().lower()
-
-# =========================
-# Clasificación alineada a SmartAssintence
-# =========================
-PRIMARY_WEAR = [
-    "Plata (Ag) (mg/kg) ASTM D5185",
-    "Aluminio (Al) (mg/kg) ASTM D5185",
-    "Cromo (Cr) (mg/kg) ASTM D5185",
-    "Cobre (Cu) (mg/kg) ASTM D5185",
-    "Hierro (Fe) (mg/kg) ASTM D5185",
-    "Índice PQ (PQI) (Adimensional) ASTM D8184",
-    "Níquel (Ni) (mg/kg) ASTM D5185",
-    "Plomo (Pb) (mg/kg) ASTM D5185",
-    "Estaño (Sn) (mg/kg) ASTM D5185",
-    "Titanio (Ti) (mg/kg) ASTM D5185",
-][:15]
-
-PRIMARY_PROPERTIES = [
-    "Número Básico (BN) (mg KOH/g) ASTM D2896",
-    "Número Ácido (AN) (mg KOH/g) ASTM D664",
-    "Viscosidad a 40 °C (mm²/s) ASTM D445",
-    "Viscosidad a 100 °C (mm²/s) ASTM D445",
-    "Visc@40C (cSt)",
-    "Visc@100C (cSt)",
-    "TBN (mg KOH/g)",
-    "TAN (mg KOH/g)",
-    "Oxidación (Abs/cm) ASTM D7414",
-    "Nitración (Abs/cm) ASTM D7624",
-    "Oxidation (Ab/cm)",
-    "Nitration (Ab/cm)",
-][:15]
-
-PRIMARY_CONTAM = [
-    "Agua (IR) (% v/v) ASTM E2412",
-    "Water (Vol%)",
-    "Hollín (% w/w) ASTM D7844",
-    "Soot (Wt%)",
-    "Silicio (Si) (mg/kg) ASTM D5185",
-    "Si (Silicon)",
-    "Sodio (Na) (mg/kg) ASTM D5185",
-    "Na (Sodium)",
-    "Potasio (K) (mg/kg) ASTM D5185",
-    "K (Potassium)",
-    "Cadmio (Cd) (mg/kg) ASTM D5185",
-    "Manganeso (Mn) (mg/kg) ASTM D5185",
-    "Vanadio (V) (mg/kg) ASTM D5185",
-    "Fuel Dilut. (Vol%)",
-    "Glycol",
-][:15]
-
-PRIMARY_ADDITIVES = [
-    "Calcio (Ca) (mg/kg) ASTM D5185",
-    "Magnesio (Mg) (mg/kg) ASTM D5185",
-    "Zinc (Zn) (mg/kg) ASTM D5185",
-    "Fósforo (P) (mg/kg) ASTM D5185",
-    "Boro (B) (mg/kg) ASTM D5185",
-    "Molibdeno (Mo) (mg/kg) ASTM D5185",
-    "Ca (Calcium)", "Mg (Magnesium)", "Zn (Zinc)", "P (Phosphorus)", "B (Boron)", "Mo (Molybdenum)"
-][:15]
-
-EXCLUDE_ALWAYS = {"Periodo uso aceite", "Unidad uso aceite"}
-
-def categorize_variable(var_name: str) -> str:
-    v = _n(var_name)
-
-    if any(_n(x) in v for x in EXCLUDE_ALWAYS):
-        return "No usar"
-
-    prop_kw = ["visc", "viscos", "tbn", "tan", "bn", "an", "oxid", "nitr", "sulf", "ftir", "ab/cm", "acid", "base number"]
-    if any(k in v for k in prop_kw):
-        return "Propiedades del lubricante"
-
-    contam_kw = [
-        "agua", "water", "soot", "holl", "silic", "sodium", "sodio", "potassium", "potasio",
-        "glycol", "fuel", "dilut", "particle", "iso 4406", "coolant", "refriger"
-    ]
-    if any(k in v for k in contam_kw):
-        return "Contaminantes"
-
-    wear_kw = [
-        "hierro", "fe", "cobre", "cu", "plomo", "pb", "alumin", "al", "cromo", "cr",
-        "niquel", "ni", "estaño", "sn", "plata", "ag", "titan", "ti", "pq", "pqi",
-        "nickel", "chrom", "copper", "lead", "iron", "aluminum", "tin", "silver", "titanium"
-    ]
-    if any(k in v for k in wear_kw):
-        return "Desgaste"
-
-    add_kw = [
-        "calcio", "ca", "magnes", "mg", "zinc", "zn", "fosfor", "phosph", "boro", "boron", "molyb", "molib"
-    ]
-    if any(k in v for k in add_kw):
-        return "Aditivos"
-
-    return "Otras variables"
-
-def top15_by_category(all_vars: list) -> dict:
-    norm_map = {_n(v): v for v in all_vars}
-
-    def pick(primary):
-        out = []
-        for p in primary:
-            key = _n(p)
-            if key in norm_map:
-                out.append(norm_map[key])
-        return out
-
+def get_top_by_category(all_vars: list, max_each: int = 15) -> dict:
+    """Categoriza y devuelve máximo 15 por categoría (estricto)."""
     cats = {
-        "Desgaste": pick(PRIMARY_WEAR),
-        "Propiedades del lubricante": pick(PRIMARY_PROPERTIES),
-        "Contaminantes": pick(PRIMARY_CONTAM),
-        "Aditivos": pick(PRIMARY_ADDITIVES),
+        "Desgaste": [],
+        "Propiedades del lubricante": [],
+        "Contaminantes": [],
+        "Aditivos": [],
         "Otras variables": []
     }
 
     for v in all_vars:
-        c = categorize_variable(v)
-        if c == "No usar":
+        cat = categorize_variable(v)
+        if cat == "No usar":
             continue
-        if c in ["Desgaste", "Propiedades del lubricante", "Contaminantes", "Aditivos"]:
-            if v not in cats[c] and len(cats[c]) < 15:
-                cats[c].append(v)
+        if cat in cats and cat != "Otras variables":
+            if len(cats[cat]) < max_each:
+                cats[cat].append(v)
 
+    # Otras (lista corta por usabilidad)
     for v in all_vars:
-        if categorize_variable(v) == "Otras variables":
+        cat = categorize_variable(v)
+        if cat == "Otras variables":
             cats["Otras variables"].append(v)
     cats["Otras variables"] = cats["Otras variables"][:30]
+
     return cats
 
 # =========================
@@ -323,12 +310,12 @@ if col_lub: group_cols.append(col_lub)
 inventario = (
     df_f.groupby(group_cols, dropna=False)
         .agg(
-            muestras=("COMPONENTE", "size"),
-            primera_fecha=("FECHA_INFORME", "min"),
-            ultima_fecha=("FECHA_INFORME", "max"),
+            Muestras=("COMPONENTE", "size"),
+            Primera_fecha=("FECHA_INFORME", "min"),
+            Última_fecha=("FECHA_INFORME", "max"),
         )
         .reset_index()
-        .sort_values("muestras", ascending=False)
+        .sort_values("Muestras", ascending=False)
 )
 
 st.dataframe(inventario, use_container_width=True)
@@ -358,14 +345,14 @@ if df_calc.empty:
 # 4. Variables para cálculo
 # =========================
 st.markdown("## 4. Variables para el cálculo")
+st.caption("Se muestran las variables principales por categoría, sin incluir fechas ni descriptores.")
 
-st.caption("Se muestran variables principales por categoría. Usa el buscador para ubicar una variable rápidamente.")
 buscador = st.text_input("Buscar variable", value="").strip().lower()
 
-cats = top15_by_category(logic_candidates)
+cats = get_top_by_category(logic_candidates, max_each=15)
 if buscador:
     for k in list(cats.keys()):
-        cats[k] = [v for v in cats[k] if buscador in _n(v)]
+        cats[k] = [v for v in cats[k] if buscador in normalize_name(v)]
 
 if "vars_checked" not in st.session_state:
     st.session_state["vars_checked"] = set()
@@ -501,9 +488,12 @@ if st.button("Calcular límites"):
             out = compute_limits(serie)
 
             fila = {
+                "Operación": None,
+                "Tipo de equipo": None,
+                "Lubricante": None,
                 "Componente": comp,
-                "Variable": v,
                 "Categoría": categorize_variable(v),
+                "Variable": v,
                 "Datos válidos": out["n"],
                 "Método": out["metodo"],
                 "Límite de precaución": out["prec"],
@@ -521,12 +511,12 @@ if st.button("Calcular límites"):
                 "Tiene estado": "Sí" if v in var_to_estado else "No",
             }
 
-            if col_op and col_op in g_comp.columns:
-                fila["Operación"] = g_comp[col_op].dropna().iloc[0] if g_comp[col_op].notna().any() else None
-            if col_tipo and col_tipo in g_comp.columns:
-                fila["Tipo de equipo"] = g_comp[col_tipo].dropna().iloc[0] if g_comp[col_tipo].notna().any() else None
-            if col_lub and col_lub in g_comp.columns:
-                fila["Lubricante"] = g_comp[col_lub].dropna().iloc[0] if g_comp[col_lub].notna().any() else None
+            if col_op and col_op in g_comp.columns and g_comp[col_op].notna().any():
+                fila["Operación"] = g_comp[col_op].dropna().iloc[0]
+            if col_tipo and col_tipo in g_comp.columns and g_comp[col_tipo].notna().any():
+                fila["Tipo de equipo"] = g_comp[col_tipo].dropna().iloc[0]
+            if col_lub and col_lub in g_comp.columns and g_comp[col_lub].notna().any():
+                fila["Lubricante"] = g_comp[col_lub].dropna().iloc[0]
 
             filas.append(fila)
 
@@ -553,7 +543,7 @@ if st.button("Calcular límites"):
         use_container_width=True
     )
 
-    archivo_excel = to_excel_bytes(resultados_vista[columnas], sheet_name="Limites")
+    archivo_excel = to_excel_bytes(resultados_vista[columnas], sheet_name="Límites")
     st.download_button(
         "Descargar Excel",
         data=archivo_excel,
@@ -562,6 +552,8 @@ if st.button("Calcular límites"):
     )
 else:
     st.info("Ajusta filtros, selecciona componentes y variables, y luego calcula los límites.")
+
+
 
 
 
