@@ -24,23 +24,26 @@ Puedes aplicar filtros opcionales por operación, tipo de equipo, lubricante y f
 mezclando dos componentes. El cálculo se realiza únicamente con las variables definidas en la guía del reporte. Si existe la columna de estado de la variable,
 puedes excluir del cálculo los registros en alerta. Finalmente, descargas los resultados en Excel.
 
-**Ejemplo de cálculo (dos métodos):**
-Ejemplo de cálculo de límites
+**Ejemplo de cálculo de límites**
 
-1. Método por percentiles (percentil = valor que deja por debajo un porcentaje de los datos)
+**1. Método por percentiles** *(percentil = valor que deja por debajo un porcentaje de los datos)*  
+Datos de Hierro: 10, 12, 15, 18, 20, 22, 25, 27, 30, 35  
 
-Datos de Hierro: 10, 12, 15, 18, 20, 22, 25, 27, 30, 35
-P90 = 30 → Precaución = 30
-P95 = 35 → Alerta = 35
+- P90 = 30 → **Precaución = 30**  
+- P95 = 35 → **Alerta = 35**
+
 Significa que el 90 % de los resultados está por debajo de 30 y el 95 % por debajo de 35.
 
-2. Método por promedio y desviación (cuando hay pocos datos)
+---
 
-Datos de Cobre: 8, 10, 9, 11, 12
-Promedio = 10
-Desviación ≈ 1.6
-Precaución = 10 + 2×1.6 = 13
-Alerta = 10 + 3×1.6 = 15
+**2. Método por promedio y desviación** *(cuando hay pocos datos)*  
+Datos de Cobre: 8, 10, 9, 11, 12  
+
+- Promedio = 10  
+- Desviación ≈ 1.6  
+
+- **Precaución = 10 + 2×1.6 = 13**  
+- **Alerta = 10 + 3×1.6 = 15**
 """)
 
 with st.sidebar:
@@ -509,6 +512,7 @@ if st.button("Calcular límites"):
     )
 else:
     st.info("Aplica filtros, selecciona el modo, elige componentes y variables, y luego calcula los límites.")
+
 
 
 
