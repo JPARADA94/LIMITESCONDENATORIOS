@@ -25,8 +25,22 @@ mezclando dos componentes. El cálculo se realiza únicamente con las variables 
 puedes excluir del cálculo los registros en alerta. Finalmente, descargas los resultados en Excel.
 
 **Ejemplo de cálculo (dos métodos):**
-- **Percentiles:** si P90=45 y P95=60, entonces **Precaución=45** y **Alerta=60**.
-- **Promedio y desviación:** si promedio=10 y desviación=3, con k=2 y k=3: **Precaución=16** y **Alerta=19**.
+Ejemplo de cálculo de límites
+
+1. Método por percentiles (percentil = valor que deja por debajo un porcentaje de los datos)
+
+Datos de Hierro: 10, 12, 15, 18, 20, 22, 25, 27, 30, 35
+P90 = 30 → Precaución = 30
+P95 = 35 → Alerta = 35
+Significa que el 90 % de los resultados está por debajo de 30 y el 95 % por debajo de 35.
+
+2. Método por promedio y desviación (cuando hay pocos datos)
+
+Datos de Cobre: 8, 10, 9, 11, 12
+Promedio = 10
+Desviación ≈ 1.6
+Precaución = 10 + 2×1.6 = 13
+Alerta = 10 + 3×1.6 = 15
 """)
 
 with st.sidebar:
@@ -495,6 +509,7 @@ if st.button("Calcular límites"):
     )
 else:
     st.info("Aplica filtros, selecciona el modo, elige componentes y variables, y luego calcula los límites.")
+
 
 
 
