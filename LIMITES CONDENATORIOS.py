@@ -13,6 +13,9 @@ from io import BytesIO
 # Configuración
 # =========================
 st.set_page_config(page_title="Límites por componente", layout="wide")
+# =========================
+# Encabezado + Aviso legal
+# =========================
 st.title("Límites por componente")
 
 st.markdown("""
@@ -22,12 +25,29 @@ mezclando dos componentes. El cálculo se realiza únicamente con las variables 
 puedes excluir del cálculo los registros en alerta. Finalmente, descargas los resultados en Excel.
 
 **Ejemplo de cálculo (dos métodos):**
-- **Método por percentiles (histórico suficiente):** si un componente tiene 20 datos de Hierro, el límite de **precaución** puede ser el **P90** y el límite de
-  **alerta** el **P95**. Esto significa que el 90% de los datos quedan por debajo del límite de precaución y el 95% por debajo del límite de alerta.
-  Por ejemplo, si P90=45 y P95=60, entonces **Precaución=45** y **Alerta=60**.
-- **Método por promedio y desviación (histórico corto):** si un componente tiene 6 datos de Hierro con promedio=10 y desviación=3, y el usuario define
-  k=2 para precaución y k=3 para alerta, entonces **Precaución = 10 + 2×3 = 16** y **Alerta = 10 + 3×3 = 19**.
+- **Percentiles:** si P90=45 y P95=60, entonces **Precaución=45** y **Alerta=60**.
+- **Promedio y desviación:** si promedio=10 y desviación=3, con k=2 y k=3: **Precaución=16** y **Alerta=19**.
 """)
+
+with st.sidebar:
+    st.markdown("## Aviso legal")
+    st.info(
+        "© 2026 Javier Parada. Todos los derechos reservados.\n\n"
+        "Herramienta desarrollada para análisis técnico de lubricación.\n\n"
+        "**Mobil™** es una marca registrada de **Exxon Mobil Corporation**. "
+        "Este software es de uso interno/educativo y no está afiliado ni respaldado "
+        "oficialmente por Exxon Mobil Corporation."
+    )
+
+# Pie de página (se ve profesional y siempre queda al final)
+st.markdown(
+    "<hr style='margin-top: 2rem; margin-bottom: 0.5rem;'>"
+    "<div style='text-align:center; font-size: 0.85rem; color: #6b7280;'>"
+    "© 2026 Javier Parada • Uso interno • Mobil™ es marca registrada de Exxon Mobil Corporation"
+    "</div>",
+    unsafe_allow_html=True
+)
+
 
 # =========================
 # Utilidades
@@ -475,6 +495,7 @@ if st.button("Calcular límites"):
     )
 else:
     st.info("Aplica filtros, selecciona el modo, elige componentes y variables, y luego calcula los límites.")
+
 
 
 
