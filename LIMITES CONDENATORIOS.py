@@ -3,8 +3,21 @@
 # Entrada: Excel TAL CUAL viene de SmartAssintence
 #
 # CAMBIO CLAVE:
-# - Ya NO se trabaja por EQUIPO.
-# - Se trabaja por COMPONENTE (cada COMPONENTE es el que se consolida y se le calculan límites).
+# - Llave de análisis: COMPONENTE (NO EQUIPO)
+#
+# NUEVO (según tu solicitud):
+# ✅ Selección de variables por “chulos” pero ORGANIZADAS por categorías:
+#    - Desgaste
+#    - Salud del aceite
+#    - Contaminación
+#    - Otras
+#
+# ✅ Sigue igual:
+# - Filtros opcionales (Operación / Tipo / Lubricante + fechas)
+# - Inventario por COMPONENTE
+# - Selección de COMPONENTES
+# - Excluir ALERTA (si existe <Variable> - Estado)
+# - Descarga en Excel
 
 import streamlit as st
 import pandas as pd
@@ -95,7 +108,7 @@ def build_candidates(df: pd.DataFrame) -> tuple[list, dict]:
             candidates.append(c)
             continue
 
-        # Incluir convertibles (si la mayoría de los valores contienen dígitos)
+        # Incluir convertibles (si la mayoría contiene dígitos)
         sample = df[c].dropna().astype(str).head(80)
         if sample.empty:
             continue
@@ -111,8 +124,60 @@ def build_candidates(df: pd.DataFrame) -> tuple[list, dict]:
     # Dedupe conservando orden
     seen = set()
     ordered = [x for x in ordered if not (x in seen or seen.add(x))]
-
     return ordered, var_to_estado
+
+def categorize_variable(var_name: str) -> str:
+    """
+    Clasifica la variable en:
+    - Desgaste
+    - Salud del aceite
+    - Contaminación
+    - Otras
+
+    (Heurística por palabras clave en ES/EN)
+    """
+    v = str(var_name).lower()
+
+    # ---- Desgaste (metales típicos + PQ) ----
+    wear_kw = [
+        "fe", "iron", "cu", "copper", "pb", "lead", "sn", "tin",
+        "cr", "chrom", "al", "alum", "ni", "nickel", "ag", "silver",
+        "ti", "titan", "mo", "moly", "mn", "mangan", "zn", "zinc",
+        "wear", "desgaste", "pq", "pq index"
+    ]
+
+    # ---- Contaminación ----
+    contam_kw = [
+        "water", "agua", "h2o", "%water", "vol%", "coolant", "refriger",
+        "k (", "potassium", "na (", "sodium", "si (", "silicon", "glycol",
+        "fuel", "diesel", "dilut", "dilution", "combustible",
+        "soot", "hollin", "hollín", "dust", "polvo",
+        "particle", "partícula", "particula", "iso", "4406", "cleanliness",
+        ">4", ">6", ">14", "visc@40", "visc@100"  # viscosidad puede ser salud, pero a veces se analiza como contaminación/adulteración; la ponemos en salud abajo, y si coincide con salud gana salud.
+    ]
+
+    # ---- Salud del aceite ----
+    health_kw = [
+        "visc", "viscos", "tbn", "tan", "oxid", "nitr", "sulf", "sulph",
+        "antioxid", "rul", "ftir", "ab/cm", "base number", "acid number",
+        "additive", "aditivo", "aw", "antiwear", "zn", "phosph", "p (", "phos",
+        "ca (", "calcium", "mg (", "magnesium", "b (", "boron", "ba (", "barium",
+        "foam", "espuma"
+    ]
+
+    # Reglas de prioridad:
+    # 1) Si parece salud (visc/TBN/TAN/oxid/nitr), salud gana.
+    if any(k in v for k in health_kw):
+        return "Salud del aceite"
+    # 2) Si parece contaminación (agua, K, Na, Si, fuel, soot, ISO), contaminación.
+    if any(k in v for k in contam_kw):
+        return "Contaminación"
+    # 3) Si parece desgaste (metales + PQ), desgaste.
+    if any(k in v for k in wear_kw):
+        return "Desgaste"
+    # 4) Otras
+    return "Otras"
+
 
 # --------------------
 # Carga
@@ -205,7 +270,7 @@ if df_f.empty:
 # 2) INVENTARIO (post-filtros)
 # =========================
 st.markdown("## 2) Inventario de COMPONENTES (post-filtros)")
-st.caption("Aquí se consolida cuántas muestras tiene cada COMPONENTE en el archivo (con los filtros aplicados).")
+st.caption("Consolida cuántas muestras tiene cada COMPONENTE (con los filtros aplicados).")
 
 group_cols = ["COMPONENTE"]
 if col_op: group_cols.append(col_op)
@@ -248,46 +313,83 @@ if df_calc.empty:
     st.stop()
 
 # =========================
-# 4) Variables por CHULOS
+# 4) Selección de VARIABLES por CHULOS (organizadas)
 # =========================
-st.markdown("## 4) Selecciona variables a analizar (por chulos)")
+st.markdown("## 4) Selecciona variables lógicas a analizar (por chulos y por categoría)")
 
-buscador = st.text_input("Buscar variable (opcional)", value="")
-vars_filtradas = [v for v in logic_candidates if buscador.strip().lower() in str(v).lower()]
-
-csel1, csel2, _ = st.columns([1, 1, 2])
+# Estado de selección
 if "vars_checked" not in st.session_state:
     st.session_state["vars_checked"] = set()
 
-with csel1:
-    if st.button("✅ Seleccionar todas (filtradas)"):
-        st.session_state["vars_checked"].update(vars_filtradas)
+buscador = st.text_input("Buscar variable (opcional)", value="").strip().lower()
 
-with csel2:
+# Clasificar variables (post-buscador)
+cats = {"Desgaste": [], "Salud del aceite": [], "Contaminación": [], "Otras": []}
+for v in logic_candidates:
+    if buscador and buscador not in str(v).lower():
+        continue
+    cat = categorize_variable(v)
+    cats.setdefault(cat, []).append(v)
+
+# Botones globales
+g1, g2, _ = st.columns([1, 1, 3])
+with g1:
+    if st.button("✅ Seleccionar TODAS (según búsqueda)"):
+        for cat_vars in cats.values():
+            st.session_state["vars_checked"].update(cat_vars)
+with g2:
     if st.button("🧹 Limpiar selección"):
         st.session_state["vars_checked"] = set()
 
-# checkboxes en columnas
-ncols = 3
-cols_ui = st.columns(ncols)
-for i, v in enumerate(vars_filtradas):
-    col = cols_ui[i % ncols]
-    with col:
-        checked = v in st.session_state["vars_checked"]
-        new_val = st.checkbox(str(v), value=checked, key=f"chk_{v}")
-        if new_val:
-            st.session_state["vars_checked"].add(v)
-        else:
-            st.session_state["vars_checked"].discard(v)
+st.caption("Tip: usa el buscador para filtrar rápido, y luego marca por categoría.")
+
+def render_category(cat_name: str, vars_list: list):
+    if not vars_list:
+        return
+
+    # Controles por categoría
+    c1, c2, c3 = st.columns([1, 1, 3])
+    with c1:
+        if st.button(f"✅ Todo {cat_name}", key=f"all_{cat_name}"):
+            st.session_state["vars_checked"].update(vars_list)
+    with c2:
+        if st.button(f"🧹 Limpiar {cat_name}", key=f"none_{cat_name}"):
+            st.session_state["vars_checked"].difference_update(vars_list)
+
+    # Checkboxes en 3 columnas
+    ncols = 3
+    cols_ui = st.columns(ncols)
+    for i, v in enumerate(vars_list):
+        col = cols_ui[i % ncols]
+        with col:
+            checked = v in st.session_state["vars_checked"]
+            new_val = st.checkbox(str(v), value=checked, key=f"chk_{cat_name}_{v}")
+            if new_val:
+                st.session_state["vars_checked"].add(v)
+            else:
+                st.session_state["vars_checked"].discard(v)
+
+# Mostrar categorías (puedes cambiar el orden si quieres)
+with st.expander("🧱 Desgaste (metales / PQ)", expanded=True):
+    render_category("Desgaste", cats["Desgaste"])
+
+with st.expander("🧪 Salud del aceite (viscosidad / TAN / TBN / oxidación / nitración…)", expanded=True):
+    render_category("Salud del aceite", cats["Salud del aceite"])
+
+with st.expander("💧 Contaminación (agua / combustible / silicio / partículas / ISO…)", expanded=True):
+    render_category("Contaminación", cats["Contaminación"])
+
+with st.expander("📌 Otras", expanded=False):
+    render_category("Otras", cats["Otras"])
 
 vars_sel = sorted(list(st.session_state["vars_checked"]))
 if not vars_sel:
     st.warning("Selecciona al menos una variable.")
     st.stop()
 
-st.info(f"Variables seleccionadas: {len(vars_sel)}")
+st.success(f"Variables seleccionadas: {len(vars_sel)}")
 
-# convertir a numérico SOLO las seleccionadas (en memoria)
+# Convertir a numérico SOLO las seleccionadas (en memoria)
 for v in vars_sel:
     df_calc[v] = convert_numeric(df_calc[v])
 
@@ -391,6 +493,7 @@ if st.button("🚀 Calcular límites"):
             row = {
                 "COMPONENTE": comp,
                 "VARIABLE": v,
+                "CATEGORIA": categorize_variable(v),
                 "n": out["n"],
                 "metodo": out["metodo"],
                 "precaucion": out["precaucion"],
@@ -425,15 +528,17 @@ if st.button("🚀 Calcular límites"):
         res_show[c] = res_show[c].round(dec)
 
     cols_order = []
-    for c in ["COMPONENTE", col_op, col_tipo, col_lub, "VARIABLE", "tiene_estado",
-              "n", "metodo", "precaucion", "condenatorio",
-              "mean", "std", "median", "min", "max",
-              "fecha_min", "fecha_max",
+    for c in ["COMPONENTE", col_op, col_tipo, col_lub, "VARIABLE", "CATEGORIA",
+              "tiene_estado", "n", "metodo", "precaucion", "condenatorio",
+              "mean", "std", "median", "min", "max", "fecha_min", "fecha_max",
               "excluye_ALERTA", "excluye_PRECAUCION", "iqr"]:
         if c and c in res_show.columns:
             cols_order.append(c)
 
-    st.dataframe(res_show[cols_order].sort_values(["COMPONENTE", "VARIABLE"]), use_container_width=True)
+    st.dataframe(
+        res_show[cols_order].sort_values(["COMPONENTE", "CATEGORIA", "VARIABLE"]),
+        use_container_width=True
+    )
 
     st.markdown("### Descargar en Excel (.xlsx)")
     xlsx_bytes = to_excel_bytes(res_show[cols_order], sheet_name="Limites")
@@ -445,6 +550,8 @@ if st.button("🚀 Calcular límites"):
     )
 else:
     st.info("Aplica filtros si quieres, selecciona COMPONENTES y variables, luego presiona **🚀 Calcular límites**.")
+
+
 
 
 
