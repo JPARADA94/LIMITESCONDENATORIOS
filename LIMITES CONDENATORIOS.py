@@ -13,58 +13,38 @@ from io import BytesIO
 # Configuración
 # =========================
 st.set_page_config(page_title="Límites por componente", layout="wide")
-# =========================
-# Encabezado + Aviso legal
-# =========================
 st.title("Límites por componente")
 
 st.markdown("""
 Esta herramienta calcula límites de **precaución** y **condenatorio (alerta)** por componente con base en el histórico del archivo exportado desde SmartAssintence.
 Puedes aplicar filtros opcionales por operación, tipo de equipo, lubricante y fechas. Luego eliges el modo de cálculo: límites por componente o un único límite
-mezclando dos componentes. El cálculo se realiza únicamente con las variables definidas en la guía del reporte. Si existe la columna de estado de la variable,
-puedes excluir del cálculo los registros en alerta. Finalmente, descargas los resultados en Excel.
+mezclando varios componentes. El cálculo se realiza únicamente con las variables definidas en la guía del reporte.  
+Si existe la columna de **Estado** de la variable (por ejemplo: *HIERRO - Estado*), el usuario puede decidir por cada variable si se excluyen del cálculo los
+resultados **fuera de lo normal** (Precaución y Alerta) o solo los de **Alerta**. Finalmente, descargas los resultados en Excel.
 
 **Ejemplo de cálculo de límites**
-
-**1. Método por percentiles** *(percentil = valor que deja por debajo un porcentaje de los datos)*  
-Datos de Hierro: 10, 12, 15, 18, 20, 22, 25, 27, 30, 35  
-
-- P90 = 30 → **Precaución = 30**  
-- P95 = 35 → **Alerta = 35**
-
-Significa que el 90 % de los resultados está por debajo de 30 y el 95 % por debajo de 35.
-
----
-
-**2. Método por promedio y desviación** *(cuando hay pocos datos)*  
-Datos de Cobre: 8, 10, 9, 11, 12  
-
-- Promedio = 10  
-- Desviación ≈ 1.6  
-
-- **Precaución = 10 + 2×1.6 = 13**  
-- **Alerta = 10 + 3×1.6 = 15**
+- **Percentiles (muchos datos):** con datos de Hierro: 10, 12, 15, 18, 20, 22, 25, 27, 30, 35 → P90=30 y P95=35 → **Precaución=30** y **Alerta=35**
+  *(percentil = valor que deja por debajo un porcentaje de los datos).*
+- **Promedio y desviación (pocos datos):** con datos de Cobre: 8, 10, 9, 11, 12 → promedio=10 y desviación≈1.6 → **Precaución=10+2×1.6=13**
+  y **Alerta=10+3×1.6=15**.
 """)
 
 with st.sidebar:
     st.markdown("## Aviso legal")
     st.info(
-        "© 2026. Todos los derechos reservados.\n\n"
-        "Herramienta desarrollada para análisis técnico de lubricación.\n\n"
-        "**Mobil™** es una marca registrada de **Exxon Mobil Corporation**. "
-        "Este software es de uso interno/educativo y no está afiliado ni respaldado "
-        "oficialmente por Exxon Mobil Corporation."
+        "© 2026 Javier Parada. Todos los derechos reservados.\n\n"
+        "Herramienta desarrollada para apoyo técnico en análisis de lubricación.\n\n"
+        "Mobil™ es una marca registrada de Exxon Mobil Corporation. "
+        "Este software no representa afiliación oficial con dicha compañía."
     )
 
-# Pie de página (se ve profesional y siempre queda al final)
 st.markdown(
-    "<hr style='margin-top: 2rem; margin-bottom: 0.5rem;'>"
+    "<hr style='margin-top: 1.5rem; margin-bottom: 0.5rem;'>"
     "<div style='text-align:center; font-size: 0.85rem; color: #6b7280;'>"
-    "© 2026  • Uso interno • Mobil™ es marca registrada de Exxon Mobil Corporation"
+    "© 2026 Javier Parada • Uso interno • Mobil™ es marca registrada de Exxon Mobil Corporation"
     "</div>",
     unsafe_allow_html=True
 )
-
 
 # =========================
 # Utilidades
@@ -102,6 +82,64 @@ def build_var_to_status(df: pd.DataFrame) -> dict:
             if base in cols:
                 mapping[base] = c
     return mapping
+
+def normalize_text(s: pd.Series) -> pd.Series:
+    return (
+        s.astype(str)
+         .str.strip()
+         .str.upper()
+         .str.replace("Ó", "O")
+         .str.replace("Á", "A")
+         .str.replace("É", "E")
+         .str.replace("Í", "I")
+         .str.replace("Ú", "U")
+    )
+
+def estado_clasificado(estado_raw: pd.Series) -> pd.Series:
+    """
+    Normaliza y clasifica el estado a: NORMAL / PRECAUCION / ALERTA
+    Soporta variantes: Normal, Caution, Precaución, Alert, etc.
+    """
+    e = normalize_text(estado_raw)
+
+    # Si viene con símbolos o textos mixtos, usamos "contiene"
+    out = pd.Series(index=e.index, dtype="object")
+
+    out[e.str.contains("ALERT", na=False)] = "ALERTA"
+    out[e.str.contains("ALERTA", na=False)] = "ALERTA"
+
+    out[e.str.contains("CAUTION", na=False)] = "PRECAUCION"
+    out[e.str.contains("PRECAUC", na=False)] = "PRECAUCION"  # PRECAUCION / PRECAUCION (P) / PRECAUCION-
+
+    # lo que no se marcó, lo consideramos normal (o vacío)
+    out = out.fillna("NORMAL")
+    return out
+
+def apply_status_filter(df_in: pd.DataFrame, var: str, filtro: str, var_to_status_map: dict) -> pd.Series:
+    """
+    Filtra valores de 'var' usando su columna '<var> - Estado' si existe.
+    - Incluir todo
+    - Excluir fuera de lo normal (Precaución y Alerta)
+    - Excluir solo Alerta
+    """
+    s = df_in[var]
+    status_col = var_to_status_map.get(var)
+
+    if not status_col or status_col not in df_in.columns:
+        return s  # si no existe Estado, no filtra
+
+    est = estado_clasificado(df_in[status_col])
+
+    if filtro == "Incluir todo":
+        return s
+
+    if filtro == "Excluir fuera de lo normal (Precaución y Alerta)":
+        return s[est == "NORMAL"]
+
+    if filtro == "Excluir solo Alerta":
+        return s[est != "ALERTA"]
+
+    return s
 
 # =========================
 # Variables fijas: SOLO las de tu guía, con nombre EXACTO del export
@@ -268,7 +306,7 @@ st.markdown("## 3. Modo de cálculo")
 
 modo = st.radio(
     "Selecciona el modo",
-    options=["Límites por componente", "Límite único mezclando dos componentes"],
+    options=["Límites por componente", "Límite único mezclando varios componentes"],
     index=0
 )
 
@@ -283,25 +321,41 @@ if not componentes:
     st.stop()
 
 if modo == "Límites por componente":
-    comps_sel = st.multiselect("Componentes a analizar", options=componentes, default=componentes[:1])
+    comps_sel = st.multiselect(
+        "Componentes a analizar",
+        options=componentes,
+        default=componentes[:1]
+    )
     if not comps_sel:
         st.warning("Selecciona al menos un componente.")
         st.stop()
     df_calc = df_f[df_f["COMPONENTE"].astype(str).isin(set(map(str, comps_sel)))].copy()
+    etiqueta_mezcla = None
 else:
-    a, b = st.columns(2)
-    with a:
-        comp_a = st.selectbox("Componente A", options=componentes, index=0)
-    with b:
-        comp_b = st.selectbox("Componente B", options=componentes, index=1 if len(componentes) > 1 else 0)
+    st.markdown("### Mezcla de componentes")
 
-    if str(comp_a) == str(comp_b):
-        st.warning("Selecciona dos componentes diferentes.")
+    n_mix = st.number_input(
+        "Cantidad de componentes a mezclar",
+        min_value=2,
+        max_value=min(10, len(componentes)),
+        value=2,
+        step=1
+    )
+
+    comps_mix = st.multiselect(
+        "Selecciona los componentes",
+        options=componentes,
+        default=componentes[:n_mix],
+        max_selections=n_mix
+    )
+
+    if len(comps_mix) != n_mix:
+        st.warning(f"Debes seleccionar exactamente {n_mix} componentes.")
         st.stop()
 
-    df_a = df_f[df_f["COMPONENTE"].astype(str) == str(comp_a)].copy()
-    df_b = df_f[df_f["COMPONENTE"].astype(str) == str(comp_b)].copy()
-    df_calc = pd.concat([df_a, df_b], ignore_index=True)
+    df_calc = df_f[df_f["COMPONENTE"].astype(str).isin(set(map(str, comps_mix)))].copy()
+    etiqueta_mezcla = " + ".join(comps_mix)
+    st.success(f"Componentes mezclados: {', '.join(comps_mix)}")
 
 if df_calc.empty:
     st.warning("No hay registros para la selección actual.")
@@ -311,8 +365,6 @@ if df_calc.empty:
 # 5) Variables
 # =========================
 st.markdown("## 5. Variables para el cálculo")
-
-excluir_alerta = st.checkbox("Excluir registros en alerta cuando exista el estado de la variable", value=True)
 
 if "vars_checked" not in st.session_state:
     st.session_state["vars_checked"] = set()
@@ -343,6 +395,30 @@ if not vars_sel:
 
 st.success(f"Variables seleccionadas: {len(vars_sel)}")
 
+# Selector por variable: qué estados excluir (basado en su columna Estado)
+st.markdown("### Filtro por estado para cada variable")
+
+if "estado_por_variable" not in st.session_state:
+    st.session_state["estado_por_variable"] = {}
+
+opciones_filtro = [
+    "Excluir fuera de lo normal (Precaución y Alerta)",
+    "Excluir solo Alerta",
+    "Incluir todo"
+]
+default_filtro = "Excluir fuera de lo normal (Precaución y Alerta)"
+
+for v in vars_sel:
+    prev = st.session_state["estado_por_variable"].get(v, default_filtro)
+    idx = opciones_filtro.index(prev) if prev in opciones_filtro else 0
+    st.session_state["estado_por_variable"][v] = st.selectbox(
+        f"Filtro de estado para {v}",
+        options=opciones_filtro,
+        index=idx,
+        key=f"estado_sel_{v}"
+    )
+
+# Convertir a numérico
 for v in vars_sel:
     df_calc[v] = convert_numeric(df_calc[v])
 
@@ -362,29 +438,12 @@ with cB:
     k_prec = st.number_input("Factor para precaución con histórico corto", min_value=0.0, value=2.0, step=0.5)
     k_alert = st.number_input("Factor para condenatorio con histórico corto", min_value=0.0, value=3.0, step=0.5)
 
-def apply_status_filter(df_in: pd.DataFrame, var: str) -> pd.Series:
-    s = df_in[var]
-    if not excluir_alerta:
-        return s
-    status_col = var_to_status.get(var)
-    if not status_col or status_col not in df_in.columns:
-        return s
-    estado = df_in[status_col].astype(str).str.strip().str.upper()
-    return s[estado != "ALERTA"]
-
 def calc_limits(series: pd.Series) -> dict:
     s = series.dropna()
     n = int(len(s))
     if n < min_n:
-        return {
-            "n": n,
-            "metodo": "Insuficiente",
-            "prec": np.nan,
-            "alert": np.nan,
-            "mean": np.nan,
-            "std": np.nan,
-            "median": np.nan
-        }
+        return {"n": n, "metodo": "Insuficiente", "prec": np.nan, "alert": np.nan,
+                "mean": np.nan, "std": np.nan, "median": np.nan}
 
     mean = float(s.mean())
     std = float(s.std(ddof=1)) if n > 1 else 0.0
@@ -399,15 +458,8 @@ def calc_limits(series: pd.Series) -> dict:
         alert = mean + (k_alert * std)
         metodo = "Media y desviación"
 
-    return {
-        "n": n,
-        "metodo": metodo,
-        "prec": prec,
-        "alert": alert,
-        "mean": mean,
-        "std": std,
-        "median": median
-    }
+    return {"n": n, "metodo": metodo, "prec": prec, "alert": alert,
+            "mean": mean, "std": std, "median": median}
 
 def get_category(var: str) -> str:
     for cat, lst in vars_by_cat.items():
@@ -426,7 +478,8 @@ if st.button("Calcular límites"):
     if modo == "Límites por componente":
         for comp, g in df_calc.groupby(df_calc["COMPONENTE"].astype(str)):
             for var in vars_sel:
-                serie = apply_status_filter(g, var)
+                filtro = st.session_state["estado_por_variable"].get(var, default_filtro)
+                serie = apply_status_filter(g, var, filtro, var_to_status)
                 out = calc_limits(serie)
 
                 filas.append({
@@ -436,6 +489,7 @@ if st.button("Calcular límites"):
                     "Componente": comp,
                     "Categoría": get_category(var),
                     "Variable": var,
+                    "Filtro de estado": filtro,
                     "Datos válidos": out["n"],
                     "Método": out["metodo"],
                     "Límite de precaución": out["prec"],
@@ -445,21 +499,19 @@ if st.button("Calcular límites"):
                     "Mediana": out["median"],
                     "Primera fecha": g["FECHA_INFORME"].min(),
                     "Última fecha": g["FECHA_INFORME"].max(),
-                    "Excluye alerta": "Sí" if excluir_alerta else "No",
                 })
 
     else:
-        comps_mix = sorted(df_calc["COMPONENTE"].dropna().astype(str).unique().tolist())
-        etiqueta = " + ".join(comps_mix) if comps_mix else "Mezcla"
-
         for var in vars_sel:
-            serie = apply_status_filter(df_calc, var)
+            filtro = st.session_state["estado_por_variable"].get(var, default_filtro)
+            serie = apply_status_filter(df_calc, var, filtro, var_to_status)
             out = calc_limits(serie)
 
             filas.append({
-                "Componentes mezclados": etiqueta,
+                "Componentes mezclados": etiqueta_mezcla,
                 "Categoría": get_category(var),
                 "Variable": var,
+                "Filtro de estado": filtro,
                 "Datos válidos": out["n"],
                 "Método": out["metodo"],
                 "Límite de precaución": out["prec"],
@@ -469,7 +521,6 @@ if st.button("Calcular límites"):
                 "Mediana": out["median"],
                 "Primera fecha": df_calc["FECHA_INFORME"].min(),
                 "Última fecha": df_calc["FECHA_INFORME"].max(),
-                "Excluye alerta": "Sí" if excluir_alerta else "No",
             })
 
     resultados = pd.DataFrame(filas)
@@ -483,19 +534,19 @@ if st.button("Calcular límites"):
     if modo == "Límites por componente":
         orden = [
             "Operación", "Tipo de equipo", "Lubricante",
-            "Componente", "Categoría", "Variable",
+            "Componente", "Categoría", "Variable", "Filtro de estado",
             "Datos válidos", "Método",
             "Límite de precaución", "Límite condenatorio",
             "Promedio", "Desviación estándar", "Mediana",
-            "Primera fecha", "Última fecha", "Excluye alerta"
+            "Primera fecha", "Última fecha"
         ]
     else:
         orden = [
-            "Componentes mezclados", "Categoría", "Variable",
+            "Componentes mezclados", "Categoría", "Variable", "Filtro de estado",
             "Datos válidos", "Método",
             "Límite de precaución", "Límite condenatorio",
             "Promedio", "Desviación estándar", "Mediana",
-            "Primera fecha", "Última fecha", "Excluye alerta"
+            "Primera fecha", "Última fecha"
         ]
 
     columnas = [c for c in orden if c in vista.columns]
@@ -512,6 +563,7 @@ if st.button("Calcular límites"):
     )
 else:
     st.info("Aplica filtros, selecciona el modo, elige componentes y variables, y luego calcula los límites.")
+
 
 
 
