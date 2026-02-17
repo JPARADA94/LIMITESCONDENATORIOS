@@ -19,8 +19,10 @@ st.markdown("""
 Esta herramienta calcula límites de **precaución** y **condenatorio (alerta)** por componente con base en el histórico del archivo exportado desde SmartAssintence.
 Puedes aplicar filtros opcionales por operación, tipo de equipo, lubricante y fechas. Luego eliges el modo de cálculo: límites por componente o un único límite
 mezclando varios componentes. El cálculo se realiza únicamente con las variables definidas en la guía del reporte.  
-Si existe la columna de **Estado** de la variable (por ejemplo: *HIERRO - Estado*), el usuario puede decidir por cada variable si se excluyen del cálculo los
-resultados **fuera de lo normal** (Precaución y Alerta) o solo los de **Alerta**. Finalmente, descargas los resultados en Excel.
+
+Si existe la columna de **Estado** de la variable (por ejemplo: *HIERRO - Estado*), puedes decidir si el cálculo se hace:
+- **Incluyendo** todos los resultados (Normal, Precaución y Alerta), o
+- **Excluyendo** los resultados **fuera de lo normal** (Precaución y Alerta) de **todas** las variables seleccionadas.
 
 **Ejemplo de cálculo de límites**
 - **Percentiles (muchos datos):** con datos de Hierro: 10, 12, 15, 18, 20, 22, 25, 27, 30, 35 → P90=30 y P95=35 → **Precaución=30** y **Alerta=35**
@@ -101,45 +103,37 @@ def estado_clasificado(estado_raw: pd.Series) -> pd.Series:
     Soporta variantes: Normal, Caution, Precaución, Alert, etc.
     """
     e = normalize_text(estado_raw)
-
-    # Si viene con símbolos o textos mixtos, usamos "contiene"
     out = pd.Series(index=e.index, dtype="object")
 
+    # ALERTA
     out[e.str.contains("ALERT", na=False)] = "ALERTA"
     out[e.str.contains("ALERTA", na=False)] = "ALERTA"
 
+    # PRECAUCION
     out[e.str.contains("CAUTION", na=False)] = "PRECAUCION"
-    out[e.str.contains("PRECAUC", na=False)] = "PRECAUCION"  # PRECAUCION / PRECAUCION (P) / PRECAUCION-
+    out[e.str.contains("PRECAUC", na=False)] = "PRECAUCION"
 
-    # lo que no se marcó, lo consideramos normal (o vacío)
+    # NORMAL (por defecto)
     out = out.fillna("NORMAL")
     return out
 
-def apply_status_filter(df_in: pd.DataFrame, var: str, filtro: str, var_to_status_map: dict) -> pd.Series:
+def apply_global_estado_filter(df_in: pd.DataFrame, var: str, excluir_fuera_normal: bool, var_to_status_map: dict) -> pd.Series:
     """
-    Filtra valores de 'var' usando su columna '<var> - Estado' si existe.
-    - Incluir todo
-    - Excluir fuera de lo normal (Precaución y Alerta)
-    - Excluir solo Alerta
+    Si excluir_fuera_normal=True:
+      - Usa la columna '<var> - Estado' para excluir PRECAUCION y ALERTA (se queda solo NORMAL).
+    Si no existe la columna Estado, no filtra.
     """
     s = df_in[var]
-    status_col = var_to_status_map.get(var)
 
-    if not status_col or status_col not in df_in.columns:
-        return s  # si no existe Estado, no filtra
-
-    est = estado_clasificado(df_in[status_col])
-
-    if filtro == "Incluir todo":
+    if not excluir_fuera_normal:
         return s
 
-    if filtro == "Excluir fuera de lo normal (Precaución y Alerta)":
-        return s[est == "NORMAL"]
+    status_col = var_to_status_map.get(var)
+    if not status_col or status_col not in df_in.columns:
+        return s
 
-    if filtro == "Excluir solo Alerta":
-        return s[est != "ALERTA"]
-
-    return s
+    est = estado_clasificado(df_in[status_col])
+    return s[est == "NORMAL"]
 
 # =========================
 # Variables fijas: SOLO las de tu guía, con nombre EXACTO del export
@@ -366,6 +360,12 @@ if df_calc.empty:
 # =========================
 st.markdown("## 5. Variables para el cálculo")
 
+# Opción global: incluir o excluir fuera de lo normal para TODAS las variables seleccionadas
+excluir_fuera_normal = st.toggle(
+    "Excluir resultados fuera de lo normal (Precaución y Alerta) usando las columnas Estado",
+    value=True
+)
+
 if "vars_checked" not in st.session_state:
     st.session_state["vars_checked"] = set()
 
@@ -394,29 +394,6 @@ if not vars_sel:
     st.stop()
 
 st.success(f"Variables seleccionadas: {len(vars_sel)}")
-
-# Selector por variable: qué estados excluir (basado en su columna Estado)
-st.markdown("### Filtro por estado para cada variable")
-
-if "estado_por_variable" not in st.session_state:
-    st.session_state["estado_por_variable"] = {}
-
-opciones_filtro = [
-    "Excluir fuera de lo normal (Precaución y Alerta)",
-    "Excluir solo Alerta",
-    "Incluir todo"
-]
-default_filtro = "Excluir fuera de lo normal (Precaución y Alerta)"
-
-for v in vars_sel:
-    prev = st.session_state["estado_por_variable"].get(v, default_filtro)
-    idx = opciones_filtro.index(prev) if prev in opciones_filtro else 0
-    st.session_state["estado_por_variable"][v] = st.selectbox(
-        f"Filtro de estado para {v}",
-        options=opciones_filtro,
-        index=idx,
-        key=f"estado_sel_{v}"
-    )
 
 # Convertir a numérico
 for v in vars_sel:
@@ -478,8 +455,7 @@ if st.button("Calcular límites"):
     if modo == "Límites por componente":
         for comp, g in df_calc.groupby(df_calc["COMPONENTE"].astype(str)):
             for var in vars_sel:
-                filtro = st.session_state["estado_por_variable"].get(var, default_filtro)
-                serie = apply_status_filter(g, var, filtro, var_to_status)
+                serie = apply_global_estado_filter(g, var, excluir_fuera_normal, var_to_status)
                 out = calc_limits(serie)
 
                 filas.append({
@@ -489,7 +465,7 @@ if st.button("Calcular límites"):
                     "Componente": comp,
                     "Categoría": get_category(var),
                     "Variable": var,
-                    "Filtro de estado": filtro,
+                    "Fuera de lo normal excluido": "Sí" if excluir_fuera_normal else "No",
                     "Datos válidos": out["n"],
                     "Método": out["metodo"],
                     "Límite de precaución": out["prec"],
@@ -503,15 +479,14 @@ if st.button("Calcular límites"):
 
     else:
         for var in vars_sel:
-            filtro = st.session_state["estado_por_variable"].get(var, default_filtro)
-            serie = apply_status_filter(df_calc, var, filtro, var_to_status)
+            serie = apply_global_estado_filter(df_calc, var, excluir_fuera_normal, var_to_status)
             out = calc_limits(serie)
 
             filas.append({
                 "Componentes mezclados": etiqueta_mezcla,
                 "Categoría": get_category(var),
                 "Variable": var,
-                "Filtro de estado": filtro,
+                "Fuera de lo normal excluido": "Sí" if excluir_fuera_normal else "No",
                 "Datos válidos": out["n"],
                 "Método": out["metodo"],
                 "Límite de precaución": out["prec"],
@@ -534,7 +509,8 @@ if st.button("Calcular límites"):
     if modo == "Límites por componente":
         orden = [
             "Operación", "Tipo de equipo", "Lubricante",
-            "Componente", "Categoría", "Variable", "Filtro de estado",
+            "Componente", "Categoría", "Variable",
+            "Fuera de lo normal excluido",
             "Datos válidos", "Método",
             "Límite de precaución", "Límite condenatorio",
             "Promedio", "Desviación estándar", "Mediana",
@@ -542,7 +518,8 @@ if st.button("Calcular límites"):
         ]
     else:
         orden = [
-            "Componentes mezclados", "Categoría", "Variable", "Filtro de estado",
+            "Componentes mezclados", "Categoría", "Variable",
+            "Fuera de lo normal excluido",
             "Datos válidos", "Método",
             "Límite de precaución", "Límite condenatorio",
             "Promedio", "Desviación estándar", "Mediana",
@@ -563,10 +540,6 @@ if st.button("Calcular límites"):
     )
 else:
     st.info("Aplica filtros, selecciona el modo, elige componentes y variables, y luego calcula los límites.")
-
-
-
-
 
 
 
