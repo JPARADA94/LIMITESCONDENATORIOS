@@ -362,7 +362,7 @@ st.markdown("## 5. Variables para el cálculo")
 
 # Opción global: incluir o excluir fuera de lo normal para TODAS las variables seleccionadas
 excluir_fuera_normal = st.toggle(
-    "Excluir resultados fuera de lo normal (Precaución y Alerta) usando las columnas Estado",
+    "Excluir resultados fuera de lo normal (Precaución y Alerta)",
     value=True
 )
 
@@ -540,6 +540,7 @@ if st.button("Calcular límites"):
     )
 else:
     st.info("Aplica filtros, selecciona el modo, elige componentes y variables, y luego calcula los límites.")
+
 
 
 
