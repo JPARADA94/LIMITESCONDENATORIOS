@@ -34,7 +34,7 @@ Si existe la columna de **Estado** de la variable (por ejemplo: *HIERRO - Estado
 with st.sidebar:
     st.markdown("## Aviso legal")
     st.info(
-        "© 2026 Javier Parada. Todos los derechos reservados.\n\n"
+        "© 2026. Todos los derechos reservados.\n\n"
         "Herramienta desarrollada para apoyo técnico en análisis de lubricación.\n\n"
         "Mobil™ es una marca registrada de Exxon Mobil Corporation. "
         "Este software no representa afiliación oficial con dicha compañía."
@@ -43,7 +43,7 @@ with st.sidebar:
 st.markdown(
     "<hr style='margin-top: 1.5rem; margin-bottom: 0.5rem;'>"
     "<div style='text-align:center; font-size: 0.85rem; color: #6b7280;'>"
-    "© 2026 Javier Parada • Uso interno • Mobil™ es marca registrada de Exxon Mobil Corporation"
+    "© 2026  • Uso interno • Mobil™ es marca registrada de Exxon Mobil Corporation"
     "</div>",
     unsafe_allow_html=True
 )
@@ -540,6 +540,7 @@ if st.button("Calcular límites"):
     )
 else:
     st.info("Aplica filtros, selecciona el modo, elige componentes y variables, y luego calcula los límites.")
+
 
 
 
