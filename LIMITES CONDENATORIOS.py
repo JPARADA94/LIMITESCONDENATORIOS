@@ -1,65 +1,189 @@
-# limites_condenatorios.py
+# LIMITES CONDENATORIOS.py
 # Autor: Javier Parada
-# Entrada: Excel TAL CUAL viene de SmartAssintence (formato ARCHIVO 2)
+# Versión: 2.0 — Edición Profesional
+# Entrada: Excel exportado desde SmartAssistance (formato ARCHIVO 2)
 # Llave de análisis: COMPONENTE
-# Salida: Excel con límites de Precaución y Condenatorio (Alerta)
+# Salida: Excel con formato + CSV con límites de Precaución y Condenatorio
 
 import streamlit as st
 import pandas as pd
 import numpy as np
 from io import BytesIO
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
 
-# =========================
-# Configuración
-# =========================
-st.set_page_config(page_title="Límites por componente", layout="wide")
-st.title("Límites por componente")
-
-st.markdown("""
-Esta herramienta calcula límites de **precaución** y **condenatorio (alerta)** por componente con base en el histórico del archivo exportado desde SmartAssintence.
-Puedes aplicar filtros opcionales por operación, tipo de equipo, lubricante y fechas. Luego eliges el modo de cálculo: límites por componente o un único límite
-mezclando varios componentes. El cálculo se realiza únicamente con las variables definidas en la guía del reporte.  
-
-Si existe la columna de **Estado** de la variable (por ejemplo: *HIERRO - Estado*), puedes decidir si el cálculo se hace:
-- **Incluyendo** todos los resultados (Normal, Precaución y Alerta), o
-- **Excluyendo** los resultados **fuera de lo normal** (Precaución y Alerta) de **todas** las variables seleccionadas.
-
-**Ejemplo de cálculo de límites**
-- **Percentiles (muchos datos):** con datos de Hierro: 10, 12, 15, 18, 20, 22, 25, 27, 30, 35 → P90=30 y P95=35 → **Precaución=30** y **Alerta=35**
-  *(percentil = valor que deja por debajo un porcentaje de los datos).*
-- **Promedio y desviación (pocos datos):** con datos de Cobre: 8, 10, 9, 11, 12 → promedio=10 y desviación≈1.6 → **Precaución=10+2×1.6=13**
-  y **Alerta=10+3×1.6=15**.
-""")
-
-with st.sidebar:
-    st.markdown("## Aviso legal")
-    st.info(
-        "© 2026. Todos los derechos reservados.\n\n"
-        "Herramienta desarrollada para apoyo técnico en análisis de lubricación.\n\n"
-        "Mobil™ es una marca registrada de Exxon Mobil Corporation. "
-        "Este software no representa afiliación oficial con dicha compañía."
-    )
-
-st.markdown(
-    "<hr style='margin-top: 1.5rem; margin-bottom: 0.5rem;'>"
-    "<div style='text-align:center; font-size: 0.85rem; color: #6b7280;'>"
-    "© 2026  • Uso interno • Mobil™ es marca registrada de Exxon Mobil Corporation"
-    "</div>",
-    unsafe_allow_html=True
+# ─────────────────────────────────────────────────────────────
+# Configuración de página
+# ─────────────────────────────────────────────────────────────
+st.set_page_config(
+    page_title="Límites Condenatorios — Análisis de Lubricación",
+    page_icon="🔧",
+    layout="wide",
+    initial_sidebar_state="expanded",
 )
 
-# =========================
+# ─────────────────────────────────────────────────────────────
+# CSS profesional
+# ─────────────────────────────────────────────────────────────
+st.markdown("""
+<style>
+html, body, [class*="css"] { font-family: 'Segoe UI', 'Inter', sans-serif; }
+
+.main-header {
+    background: linear-gradient(135deg, #1a3a5c 0%, #1d6fcf 100%);
+    color: white;
+    padding: 2rem 2.5rem 1.6rem;
+    border-radius: 12px;
+    margin-bottom: 1.5rem;
+}
+.main-header h1 { margin: 0; font-size: 1.9rem; font-weight: 700; letter-spacing: -0.4px; }
+.main-header p  { margin: 0.4rem 0 0; font-size: 0.92rem; opacity: 0.85; }
+
+.kpi-card {
+    background: white;
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    padding: 1rem 1.2rem;
+    text-align: center;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.07);
+}
+.kpi-value { font-size: 1.8rem; font-weight: 700; color: #1a3a5c; line-height: 1.1; }
+.kpi-label { font-size: 0.74rem; color: #6b7280; margin-top: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
+
+.section-title {
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: #1a3a5c;
+    border-left: 4px solid #1d6fcf;
+    padding-left: 0.75rem;
+    margin: 2rem 0 0.9rem;
+}
+
+.footer {
+    text-align: center;
+    font-size: 0.78rem;
+    color: #9ca3af;
+    margin-top: 3rem;
+    padding-top: 1rem;
+    border-top: 1px solid #e5e7eb;
+}
+
+.block-container { padding-top: 1.2rem; }
+</style>
+""", unsafe_allow_html=True)
+
+# ─────────────────────────────────────────────────────────────
+# Constantes: variables, unidades, iconos de categoría
+# ─────────────────────────────────────────────────────────────
+GUIDE_VARS = {
+    "Desgaste": [
+        "PLATA (AG) - 19", "ALUMINIO (AL) - 20", "CROMO (CR) - 24",
+        "COBRE (CU) - 25", "HIERRO (FE) - 26", "ÍNDICE PQ (PQI) - 3",
+        "NÍQUEL (NI) - 32", "PLOMO (PB) - 35", "ESTAÑO (SN) - 37", "TITANIO (TI) - 38",
+    ],
+    "Propiedades del lubricante": [
+        "NÚMERO BÁSICO (BN) - 12", "VISCOSIDAD A 100 °C - 13",
+        "NÚMERO ÁCIDO (AN) - 43", "OXIDACIÓN - 80", "NITRACIÓN - 82",
+    ],
+    "Contaminantes": [
+        "CADMIO (CD) - 23", "POTASIO (K) - 27", "MANGANESO (MN) - 29",
+        "SODIO (NA) - 31", "SILICIO (SI) - 36", "VANADIO (V) - 39",
+        "HOLLÍN - 79", "AGUA (IR) - 74",
+    ],
+    "Aditivos": [
+        "BORO (B) - 18", "BARIO (BA) - 21", "CALCIO (CA) - 22",
+        "MAGNESIO (MG) - 28", "MOLIBDENO (MO) - 30", "FÓSFORO (P) - 34", "ZINC (ZN) - 40",
+    ],
+}
+
+VAR_UNITS = {
+    "PLATA (AG) - 19": "ppm",       "ALUMINIO (AL) - 20": "ppm",
+    "CROMO (CR) - 24": "ppm",       "COBRE (CU) - 25": "ppm",
+    "HIERRO (FE) - 26": "ppm",      "ÍNDICE PQ (PQI) - 3": "índice",
+    "NÍQUEL (NI) - 32": "ppm",      "PLOMO (PB) - 35": "ppm",
+    "ESTAÑO (SN) - 37": "ppm",      "TITANIO (TI) - 38": "ppm",
+    "NÚMERO BÁSICO (BN) - 12": "mg KOH/g",
+    "VISCOSIDAD A 100 °C - 13": "cSt",
+    "NÚMERO ÁCIDO (AN) - 43": "mg KOH/g",
+    "OXIDACIÓN - 80": "abs/cm",     "NITRACIÓN - 82": "abs/cm",
+    "CADMIO (CD) - 23": "ppm",      "POTASIO (K) - 27": "ppm",
+    "MANGANESO (MN) - 29": "ppm",   "SODIO (NA) - 31": "ppm",
+    "SILICIO (SI) - 36": "ppm",     "VANADIO (V) - 39": "ppm",
+    "HOLLÍN - 79": "%",             "AGUA (IR) - 74": "%",
+    "BORO (B) - 18": "ppm",         "BARIO (BA) - 21": "ppm",
+    "CALCIO (CA) - 22": "ppm",      "MAGNESIO (MG) - 28": "ppm",
+    "MOLIBDENO (MO) - 30": "ppm",   "FÓSFORO (P) - 34": "ppm",
+    "ZINC (ZN) - 40": "ppm",
+}
+
+CAT_ICONS = {
+    "Desgaste": "⚙️",
+    "Propiedades del lubricante": "🧪",
+    "Contaminantes": "⚠️",
+    "Aditivos": "🔬",
+}
+
+# ─────────────────────────────────────────────────────────────
+# Encabezado principal
+# ─────────────────────────────────────────────────────────────
+st.markdown("""
+<div class="main-header">
+    <h1>🔧 Límites Condenatorios por Componente</h1>
+    <p>Análisis estadístico de lubricación · Histórico SmartAssistance · v2.0</p>
+</div>
+""", unsafe_allow_html=True)
+
+# ─────────────────────────────────────────────────────────────
+# Sidebar — Parámetros de cálculo
+# ─────────────────────────────────────────────────────────────
+with st.sidebar:
+    st.markdown("## ⚙️ Parámetros de cálculo")
+
+    min_n = st.number_input(
+        "Mínimo de datos válidos",
+        min_value=2, value=3, step=1,
+        help="Componentes con menos datos se marcan como Insuficiente."
+    )
+
+    st.markdown("**Umbral de método**")
+    n_switch = st.number_input(
+        "Usar percentiles si n ≥",
+        min_value=3, value=10, step=1,
+        help="Con n menor, se aplica Media ± k·σ."
+    )
+
+    st.markdown("**Percentiles** *(n grande)*")
+    p_prec  = st.slider("Percentil Precaución",    50, 99, 90, 1)
+    p_alert = st.slider("Percentil Condenatorio",  50, 99, 95, 1)
+
+    st.markdown("**Factores k** *(n pequeño)*")
+    k_prec  = st.number_input("k Precaución  (μ + k·σ)",    min_value=0.0, value=2.0, step=0.5)
+    k_alert = st.number_input("k Condenatorio (μ + k·σ)",  min_value=0.0, value=3.0, step=0.5)
+
+    st.markdown("**Opciones avanzadas**")
+    usar_iqr = st.checkbox(
+        "Limpiar outliers (IQR) antes de calcular",
+        value=False,
+        help="Elimina valores fuera de Q1−1.5·IQR / Q3+1.5·IQR. Recomendado para PQI."
+    )
+
+    st.divider()
+    st.markdown("**ℹ️ Aviso legal**")
+    st.caption(
+        "© 2026 · Javier Parada. Todos los derechos reservados.\n\n"
+        "Herramienta de apoyo técnico en análisis de lubricación.\n\n"
+        "Mobil™ es marca registrada de Exxon Mobil Corporation. "
+        "Este software no representa afiliación oficial."
+    )
+
+# ─────────────────────────────────────────────────────────────
 # Utilidades
-# =========================
+# ─────────────────────────────────────────────────────────────
 @st.cache_data(show_spinner=False)
 def load_excel(file) -> pd.DataFrame:
     return pd.read_excel(file)
-
-def to_excel_bytes(df_export: pd.DataFrame, sheet_name: str = "Resultados") -> bytes:
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df_export.to_excel(writer, index=False, sheet_name=sheet_name)
-    return output.getvalue()
 
 def convert_numeric(series: pd.Series) -> pd.Series:
     return pd.to_numeric(
@@ -72,10 +196,6 @@ def first_non_null(series: pd.Series):
     return s.iloc[0] if not s.empty else None
 
 def build_var_to_status(df: pd.DataFrame) -> dict:
-    """
-    En ARCHIVO 2 las columnas de estado suelen venir como:
-    'COBRE (CU) - 25 - Estado '
-    """
     mapping = {}
     cols = set(df.columns)
     for c in df.columns:
@@ -87,103 +207,183 @@ def build_var_to_status(df: pd.DataFrame) -> dict:
 
 def normalize_text(s: pd.Series) -> pd.Series:
     return (
-        s.astype(str)
-         .str.strip()
-         .str.upper()
-         .str.replace("Ó", "O")
-         .str.replace("Á", "A")
-         .str.replace("É", "E")
-         .str.replace("Í", "I")
-         .str.replace("Ú", "U")
+        s.astype(str).str.strip().str.upper()
+         .str.replace("Ó", "O").str.replace("Á", "A")
+         .str.replace("É", "E").str.replace("Í", "I").str.replace("Ú", "U")
     )
 
 def estado_clasificado(estado_raw: pd.Series) -> pd.Series:
-    """
-    Normaliza y clasifica el estado a: NORMAL / PRECAUCION / ALERTA
-    Soporta variantes: Normal, Caution, Precaución, Alert, etc.
-    """
     e = normalize_text(estado_raw)
     out = pd.Series(index=e.index, dtype="object")
-
-    # ALERTA
-    out[e.str.contains("ALERT", na=False)] = "ALERTA"
-    out[e.str.contains("ALERTA", na=False)] = "ALERTA"
-
-    # PRECAUCION
+    out[e.str.contains("ALERT",   na=False)] = "ALERTA"
+    out[e.str.contains("ALERTA",  na=False)] = "ALERTA"
     out[e.str.contains("CAUTION", na=False)] = "PRECAUCION"
     out[e.str.contains("PRECAUC", na=False)] = "PRECAUCION"
+    return out.fillna("NORMAL")
 
-    # NORMAL (por defecto)
-    out = out.fillna("NORMAL")
-    return out
-
-def apply_global_estado_filter(df_in: pd.DataFrame, var: str, excluir_fuera_normal: bool, var_to_status_map: dict) -> pd.Series:
-    """
-    Si excluir_fuera_normal=True:
-      - Usa la columna '<var> - Estado' para excluir PRECAUCION y ALERTA (se queda solo NORMAL).
-    Si no existe la columna Estado, no filtra.
-    """
+def apply_estado_filter(
+    df_in: pd.DataFrame, var: str, excluir: bool, var_to_status: dict
+) -> pd.Series:
     s = df_in[var]
-
-    if not excluir_fuera_normal:
+    if not excluir:
         return s
-
-    status_col = var_to_status_map.get(var)
+    status_col = var_to_status.get(var)
     if not status_col or status_col not in df_in.columns:
         return s
+    return s[estado_clasificado(df_in[status_col]) == "NORMAL"]
 
-    est = estado_clasificado(df_in[status_col])
-    return s[est == "NORMAL"]
+def clean_iqr(s: pd.Series) -> pd.Series:
+    s = s.dropna()
+    if len(s) < 4:
+        return s
+    q1, q3 = s.quantile(0.25), s.quantile(0.75)
+    iqr = q3 - q1
+    return s[(s >= q1 - 1.5 * iqr) & (s <= q3 + 1.5 * iqr)]
 
-# =========================
-# Variables fijas: SOLO las de tu guía, con nombre EXACTO del export
-# =========================
-GUIDE_VARS = {
-    "Desgaste": [
-        "PLATA (AG) - 19",
-        "ALUMINIO (AL) - 20",
-        "CROMO (CR) - 24",
-        "COBRE (CU) - 25",
-        "HIERRO (FE) - 26",
-        "ÍNDICE PQ (PQI) - 3",
-        "NÍQUEL (NI) - 32",
-        "PLOMO (PB) - 35",
-        "ESTAÑO (SN) - 37",
-        "TITANIO (TI) - 38",
-    ],
-    "Propiedades del lubricante": [
-        "NÚMERO BÁSICO (BN) - 12",
-        "VISCOSIDAD A 100 °C - 13",
-        "NÚMERO ÁCIDO (AN) - 43",
-        "OXIDACIÓN - 80",
-        "NITRACIÓN - 82",
-    ],
-    "Contaminantes": [
-        "CADMIO (CD) - 23",
-        "POTASIO (K) - 27",
-        "MANGANESO (MN) - 29",
-        "SODIO (NA) - 31",
-        "SILICIO (SI) - 36",
-        "VANADIO (V) - 39",
-        "HOLLÍN - 79",
-        "AGUA (IR) - 74",
-    ],
-    "Aditivos": [
-        "BORO (B) - 18",
-        "BARIO (BA) - 21",
-        "CALCIO (CA) - 22",
-        "MAGNESIO (MG) - 28",
-        "MOLIBDENO (MO) - 30",
-        "FÓSFORO (P) - 34",
-        "ZINC (ZN) - 40",
-    ],
-}
+def calc_limits(series: pd.Series) -> dict:
+    s = series.dropna()
+    n_orig = int(len(s))
 
-# =========================
-# Carga de archivo
-# =========================
-archivo = st.file_uploader("Cargar archivo Excel de SmartAssintence", type=["xlsx"])
+    base = {"n": n_orig, "n_orig": n_orig, "prec": np.nan, "alert": np.nan,
+            "mean": np.nan, "std": np.nan, "median": np.nan,
+            "vmin": np.nan, "vmax": np.nan}
+
+    if n_orig < min_n:
+        return {**base, "metodo": "Insuficiente"}
+
+    if usar_iqr:
+        s = clean_iqr(s)
+
+    n = int(len(s))
+    if n < min_n:
+        return {**base, "n": n, "metodo": "Insuficiente (post-IQR)"}
+
+    mean   = float(s.mean())
+    std    = float(s.std(ddof=1)) if n > 1 else 0.0
+    median = float(s.median())
+    vmin   = float(s.min())
+    vmax   = float(s.max())
+
+    if n >= n_switch:
+        prec  = float(s.quantile(p_prec  / 100))
+        alert = float(s.quantile(p_alert / 100))
+        metodo = f"Percentiles P{p_prec}/P{p_alert}"
+    else:
+        prec  = mean + k_prec  * std
+        alert = mean + k_alert * std
+        metodo = f"Media+{k_prec}σ / +{k_alert}σ"
+
+    return {"n": n, "n_orig": n_orig, "metodo": metodo,
+            "prec": prec, "alert": alert,
+            "mean": mean, "std": std, "median": median,
+            "vmin": vmin, "vmax": vmax}
+
+def get_category(var: str) -> str:
+    for cat, lst in vars_by_cat.items():
+        if var in lst:
+            return cat
+    return "Sin categoría"
+
+# ─────────────────────────────────────────────────────────────
+# Excel con formato (openpyxl)
+# ─────────────────────────────────────────────────────────────
+def to_excel_colored(df_export: pd.DataFrame) -> bytes:
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df_export.to_excel(writer, index=False, sheet_name="Límites")
+        ws = writer.sheets["Límites"]
+
+        hdr_fill   = PatternFill("solid", fgColor="1A3A5C")
+        prec_fill  = PatternFill("solid", fgColor="FEF9C3")
+        alert_fill = PatternFill("solid", fgColor="FEE2E2")
+        alt_fill   = PatternFill("solid", fgColor="F8FAFC")
+
+        thin   = Side(border_style="thin", color="D1D5DB")
+        border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+        hdr_font  = Font(bold=True, color="FFFFFF", size=10)
+        body_font = Font(size=10)
+
+        cols_lower = [str(c).lower() for c in df_export.columns]
+        prec_idx  = next((i + 1 for i, c in enumerate(cols_lower) if "precau" in c), None)
+        alert_idx = next((i + 1 for i, c in enumerate(cols_lower) if "condenator" in c), None)
+
+        for cell in ws[1]:
+            cell.fill      = hdr_fill
+            cell.font      = hdr_font
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            cell.border    = border
+        ws.row_dimensions[1].height = 32
+
+        for row_idx, row in enumerate(ws.iter_rows(min_row=2), start=2):
+            row_bg = alt_fill if row_idx % 2 == 0 else PatternFill()
+            for col_idx, cell in enumerate(row, start=1):
+                cell.font      = body_font
+                cell.border    = border
+                cell.alignment = Alignment(vertical="center")
+                if col_idx == prec_idx:
+                    cell.fill = prec_fill
+                elif col_idx == alert_idx:
+                    cell.fill = alert_fill
+                else:
+                    cell.fill = row_bg
+
+        for col in ws.columns:
+            max_len = max(len(str(cell.value or "")) for cell in col)
+            ws.column_dimensions[get_column_letter(col[0].column)].width = min(max(max_len + 2, 12), 38)
+
+        ws.freeze_panes = "A2"
+
+    return output.getvalue()
+
+# ─────────────────────────────────────────────────────────────
+# Función de estilo para la tabla de resultados
+# ─────────────────────────────────────────────────────────────
+def style_results(df_vis: pd.DataFrame) -> pd.DataFrame:
+    style_df = pd.DataFrame("", index=df_vis.index, columns=df_vis.columns)
+
+    if "Método" in df_vis.columns:
+        mask_insuf = df_vis["Método"].astype(str).str.contains("Insuf", na=False)
+        style_df[mask_insuf] = "background-color: #f3f4f6; color: #9ca3af"
+
+    if "Límite de precaución" in df_vis.columns:
+        mask = pd.to_numeric(df_vis["Límite de precaución"], errors="coerce").notna()
+        style_df.loc[mask, "Límite de precaución"] = "background-color: #fef9c3; font-weight: bold"
+
+    if "Límite condenatorio" in df_vis.columns:
+        mask = pd.to_numeric(df_vis["Límite condenatorio"], errors="coerce").notna()
+        style_df.loc[mask, "Límite condenatorio"] = "background-color: #fee2e2; font-weight: bold"
+
+    return style_df
+
+# ─────────────────────────────────────────────────────────────
+# Carga del archivo
+# ─────────────────────────────────────────────────────────────
+st.markdown('<div class="section-title">📂 Carga del archivo</div>', unsafe_allow_html=True)
+
+col_up, col_info = st.columns([2, 1])
+with col_up:
+    archivo = st.file_uploader(
+        "Selecciona el Excel exportado desde SmartAssistance (ARCHIVO 2)",
+        type=["xlsx"],
+        help="El archivo no se modifica. Solo se lee en memoria."
+    )
+with col_info:
+    st.info(
+        "**Formato esperado:** Export estándar SmartAssistance\n\n"
+        "**Columnas requeridas:** COMPONENTE, FECHA_INFORME\n\n"
+        "**Columnas opcionales:** NOMBRE_OPERACION, TIPO_EQUIPO, PRODUCTO"
+    )
+
 if not archivo:
+    st.markdown(
+        "<div style='text-align:center; padding:3rem 0; color:#9ca3af;'>"
+        "<div style='font-size:3rem;'>📊</div>"
+        "<div style='font-size:1.1rem; margin-top:0.5rem;'>"
+        "Carga un archivo Excel para comenzar el análisis"
+        "</div></div>",
+        unsafe_allow_html=True
+    )
     st.stop()
 
 df = load_excel(archivo).copy()
@@ -191,47 +391,72 @@ df = load_excel(archivo).copy()
 required_cols = ["COMPONENTE", "FECHA_INFORME"]
 missing = [c for c in required_cols if c not in df.columns]
 if missing:
-    st.error(f"Faltan columnas requeridas: {missing}")
+    st.error(f"**Faltan columnas requeridas:** {', '.join(missing)}")
     st.stop()
 
 df["FECHA_INFORME"] = pd.to_datetime(df["FECHA_INFORME"], errors="coerce")
 if df["FECHA_INFORME"].isna().all():
-    st.error("La columna FECHA_INFORME no contiene fechas válidas.")
+    st.error("La columna **FECHA_INFORME** no contiene fechas válidas.")
     st.stop()
 
-col_operacion = "NOMBRE_OPERACION" if "NOMBRE_OPERACION" in df.columns else None
-col_tipo_equipo = "TIPO_EQUIPO" if "TIPO_EQUIPO" in df.columns else None
-col_lubricante = "PRODUCTO" if "PRODUCTO" in df.columns else None
+col_operacion   = "NOMBRE_OPERACION" if "NOMBRE_OPERACION" in df.columns else None
+col_tipo_equipo = "TIPO_EQUIPO"      if "TIPO_EQUIPO"      in df.columns else None
+col_lubricante  = "PRODUCTO"         if "PRODUCTO"         in df.columns else None
 
 var_to_status = build_var_to_status(df)
 
-# Variables disponibles (según guía) que sí existen en el archivo
-available = set(df.columns)
+available   = set(df.columns)
 vars_by_cat = {cat: [v for v in vlist if v in available] for cat, vlist in GUIDE_VARS.items()}
 total_exist = sum(len(v) for v in vars_by_cat.values())
+
 if total_exist == 0:
     st.error(
         "No se encontró ninguna variable de la guía en el archivo. "
-        "Verifica que sea el export estándar de SmartAssintence (formato ARCHIVO 2)."
+        "Verifica que sea el export estándar de SmartAssistance (ARCHIVO 2)."
     )
     st.stop()
 
-with st.expander("Revisión de variables encontradas", expanded=False):
-    for cat in vars_by_cat:
-        st.write(f"**{cat}** — encontradas: {len(vars_by_cat[cat])} / {len(GUIDE_VARS[cat])}")
-        miss = [v for v in GUIDE_VARS[cat] if v not in available]
-        if miss:
-            st.caption("No encontradas (puede variar si el export cambió):")
-            st.write(miss)
+# ─────────────────────────────────────────────────────────────
+# KPIs globales
+# ─────────────────────────────────────────────────────────────
+st.markdown('<div class="section-title">📊 Resumen del archivo cargado</div>', unsafe_allow_html=True)
 
-# =========================
-# 1) Filtros opcionales
-# =========================
-st.markdown("## 1. Filtros de análisis")
+fecha_min_g  = df["FECHA_INFORME"].min()
+fecha_max_g  = df["FECHA_INFORME"].max()
+
+k1, k2, k3, k4, k5 = st.columns(5)
+kpis = [
+    (f"{len(df):,}",           "Total muestras"),
+    (str(df["COMPONENTE"].nunique()), "Componentes"),
+    (str(total_exist),         "Variables disponibles"),
+    (fecha_min_g.strftime("%b %Y") if pd.notna(fecha_min_g) else "—", "Primera muestra"),
+    (fecha_max_g.strftime("%b %Y") if pd.notna(fecha_max_g) else "—", "Última muestra"),
+]
+for col, (val, label) in zip([k1, k2, k3, k4, k5], kpis):
+    with col:
+        st.markdown(
+            f'<div class="kpi-card"><div class="kpi-value">{val}</div>'
+            f'<div class="kpi-label">{label}</div></div>',
+            unsafe_allow_html=True
+        )
+
+with st.expander("🔍 Detalle de variables encontradas", expanded=False):
+    for cat, icon in CAT_ICONS.items():
+        found = vars_by_cat.get(cat, [])
+        total = len(GUIDE_VARS.get(cat, []))
+        st.write(f"**{icon} {cat}** — {len(found)} / {total} encontradas")
+        miss = [v for v in GUIDE_VARS.get(cat, []) if v not in available]
+        if miss:
+            st.caption("No encontradas: " + " · ".join(miss))
+
+# ─────────────────────────────────────────────────────────────
+# 1. Filtros de análisis
+# ─────────────────────────────────────────────────────────────
+st.markdown('<div class="section-title">1️⃣ Filtros de análisis</div>', unsafe_allow_html=True)
 
 df_f = df.copy()
 
-usar_fechas = st.checkbox("Filtrar por fechas", value=False)
+usar_fechas = st.checkbox("Filtrar por rango de fechas", value=False)
 if usar_fechas:
     fmin = df_f["FECHA_INFORME"].min()
     fmax = df_f["FECHA_INFORME"].max()
@@ -242,72 +467,78 @@ if usar_fechas:
             min_value=fmin.date(),
             max_value=fmax.date()
         )
-        df_f = df_f[(df_f["FECHA_INFORME"] >= pd.to_datetime(ini)) &
-                    (df_f["FECHA_INFORME"] <= pd.to_datetime(fin))].copy()
+        df_f = df_f[
+            (df_f["FECHA_INFORME"] >= pd.to_datetime(ini)) &
+            (df_f["FECHA_INFORME"] <= pd.to_datetime(fin))
+        ].copy()
 
 c1, c2, c3 = st.columns(3)
 with c1:
-    usar_operacion = st.checkbox("Filtrar por operación", value=False, disabled=(col_operacion is None))
-    if usar_operacion and col_operacion:
+    if col_operacion:
         ops = st.multiselect("Operación", sorted(df_f[col_operacion].dropna().unique()))
         if ops:
             df_f = df_f[df_f[col_operacion].isin(ops)].copy()
-
+    else:
+        st.caption("NOMBRE_OPERACION no está en el archivo.")
 with c2:
-    usar_tipo = st.checkbox("Filtrar por tipo de equipo", value=False, disabled=(col_tipo_equipo is None))
-    if usar_tipo and col_tipo_equipo:
+    if col_tipo_equipo:
         tipos = st.multiselect("Tipo de equipo", sorted(df_f[col_tipo_equipo].dropna().unique()))
         if tipos:
             df_f = df_f[df_f[col_tipo_equipo].isin(tipos)].copy()
-
+    else:
+        st.caption("TIPO_EQUIPO no está en el archivo.")
 with c3:
-    usar_lub = st.checkbox("Filtrar por lubricante", value=False, disabled=(col_lubricante is None))
-    if usar_lub and col_lubricante:
-        lubs = st.multiselect("Lubricante", sorted(df_f[col_lubricante].dropna().unique()))
+    if col_lubricante:
+        lubs = st.multiselect("Lubricante (PRODUCTO)", sorted(df_f[col_lubricante].dropna().unique()))
         if lubs:
             df_f = df_f[df_f[col_lubricante].isin(lubs)].copy()
+    else:
+        st.caption("PRODUCTO no está en el archivo.")
 
 if df_f.empty:
     st.warning("No hay datos con los filtros seleccionados.")
     st.stop()
 
-# =========================
-# 2) Inventario
-# =========================
-st.markdown("## 2. Inventario de componentes")
+st.caption(f"Registros tras filtros: **{len(df_f):,}** de {len(df):,}")
+
+# ─────────────────────────────────────────────────────────────
+# 2. Inventario de componentes
+# ─────────────────────────────────────────────────────────────
+st.markdown('<div class="section-title">2️⃣ Inventario de componentes</div>', unsafe_allow_html=True)
 
 group_cols = ["COMPONENTE"]
-if col_operacion: group_cols.append(col_operacion)
+if col_operacion:   group_cols.append(col_operacion)
 if col_tipo_equipo: group_cols.append(col_tipo_equipo)
-if col_lubricante: group_cols.append(col_lubricante)
+if col_lubricante:  group_cols.append(col_lubricante)
 
 inventario = (
     df_f.groupby(group_cols, dropna=False)
         .agg(
-            Muestras=("COMPONENTE", "size"),
-            Primera_fecha=("FECHA_INFORME", "min"),
-            Última_fecha=("FECHA_INFORME", "max"),
+            Muestras      = ("COMPONENTE", "size"),
+            Primera_fecha = ("FECHA_INFORME", "min"),
+            Última_fecha  = ("FECHA_INFORME", "max"),
         )
         .reset_index()
         .sort_values("Muestras", ascending=False)
 )
-st.dataframe(inventario, use_container_width=True)
+st.dataframe(inventario, use_container_width=True, height=260)
 
-# =========================
-# 3) Modo de cálculo
-# =========================
-st.markdown("## 3. Modo de cálculo")
+# ─────────────────────────────────────────────────────────────
+# 3. Modo de cálculo
+# ─────────────────────────────────────────────────────────────
+st.markdown('<div class="section-title">3️⃣ Modo de cálculo</div>', unsafe_allow_html=True)
 
 modo = st.radio(
-    "Selecciona el modo",
+    "¿Cómo quieres calcular los límites?",
     options=["Límites por componente", "Límite único mezclando varios componentes"],
+    horizontal=True,
     index=0
 )
 
-# =========================
-# 4) Selección de componentes
-# =========================
-st.markdown("## 4. Selección de componentes")
+# ─────────────────────────────────────────────────────────────
+# 4. Selección de componentes
+# ─────────────────────────────────────────────────────────────
+st.markdown('<div class="section-title">4️⃣ Selección de componentes</div>', unsafe_allow_html=True)
 
 componentes = sorted(df_f["COMPONENTE"].dropna().astype(str).unique())
 if not componentes:
@@ -318,52 +549,43 @@ if modo == "Límites por componente":
     comps_sel = st.multiselect(
         "Componentes a analizar",
         options=componentes,
-        default=componentes[:1]
+        default=componentes[:1],
+        help="Se calculan límites independientes para cada uno."
     )
     if not comps_sel:
         st.warning("Selecciona al menos un componente.")
         st.stop()
-    df_calc = df_f[df_f["COMPONENTE"].astype(str).isin(set(map(str, comps_sel)))].copy()
+    df_calc         = df_f[df_f["COMPONENTE"].astype(str).isin(set(map(str, comps_sel)))].copy()
     etiqueta_mezcla = None
 else:
-    st.markdown("### Mezcla de componentes")
-
     n_mix = st.number_input(
         "Cantidad de componentes a mezclar",
-        min_value=2,
-        max_value=len(componentes),
-        value=min(2, len(componentes)),
-        step=1
+        min_value=2, max_value=len(componentes), value=min(2, len(componentes)), step=1
     )
-
     comps_mix = st.multiselect(
-        "Selecciona los componentes",
-        options=componentes,
-        default=componentes[:n_mix],
-        max_selections=n_mix
+        "Componentes a mezclar",
+        options=componentes, default=componentes[:n_mix], max_selections=n_mix
     )
-
     if len(comps_mix) != n_mix:
-        st.warning(f"Debes seleccionar exactamente {n_mix} componentes.")
+        st.warning(f"Selecciona exactamente {n_mix} componentes.")
         st.stop()
-
-    df_calc = df_f[df_f["COMPONENTE"].astype(str).isin(set(map(str, comps_mix)))].copy()
+    df_calc         = df_f[df_f["COMPONENTE"].astype(str).isin(set(map(str, comps_mix)))].copy()
     etiqueta_mezcla = " + ".join(comps_mix)
-    st.success(f"Componentes mezclados: {', '.join(comps_mix)}")
+    st.info(f"Límite único para: **{etiqueta_mezcla}** — {len(df_calc):,} registros combinados")
 
 if df_calc.empty:
     st.warning("No hay registros para la selección actual.")
     st.stop()
 
-# =========================
-# 5) Variables
-# =========================
-st.markdown("## 5. Variables para el cálculo")
+# ─────────────────────────────────────────────────────────────
+# 5. Variables para el cálculo
+# ─────────────────────────────────────────────────────────────
+st.markdown('<div class="section-title">5️⃣ Variables para el cálculo</div>', unsafe_allow_html=True)
 
-# Opción global: incluir o excluir fuera de lo normal para TODAS las variables seleccionadas
 excluir_fuera_normal = st.toggle(
-    "Excluir resultados fuera de lo normal (Precaución y Alerta)",
-    value=True
+    "Excluir resultados fuera de lo normal (Precaución y Alerta) del cálculo base",
+    value=True,
+    help="Si está activo, los registros con estado Precaución o Alerta no se usan para calcular los límites."
 )
 
 if "vars_checked" not in st.session_state:
@@ -372,182 +594,278 @@ if "vars_checked" not in st.session_state:
 def render_cat(title: str, vars_list: list, expanded: bool):
     if not vars_list:
         return
-    with st.expander(title, expanded=expanded):
+    icon = CAT_ICONS.get(title, "")
+    with st.expander(f"{icon} {title}  ({len(vars_list)} variables disponibles)", expanded=expanded):
         cols = st.columns(3)
         for i, v in enumerate(vars_list):
             with cols[i % 3]:
-                cur = v in st.session_state["vars_checked"]
-                val = st.checkbox(v, value=cur, key=f"chk_{title}_{v}")
+                unit  = VAR_UNITS.get(v, "")
+                label = f"{v}" + (f"  *[{unit}]*" if unit else "")
+                cur   = v in st.session_state["vars_checked"]
+                val   = st.checkbox(label, value=cur, key=f"chk_{title}_{v}")
                 if val:
                     st.session_state["vars_checked"].add(v)
                 else:
                     st.session_state["vars_checked"].discard(v)
 
-render_cat("Desgaste", vars_by_cat["Desgaste"], expanded=True)
+render_cat("Desgaste",                   vars_by_cat["Desgaste"],                   expanded=True)
 render_cat("Propiedades del lubricante", vars_by_cat["Propiedades del lubricante"], expanded=True)
-render_cat("Contaminantes", vars_by_cat["Contaminantes"], expanded=True)
-render_cat("Aditivos", vars_by_cat["Aditivos"], expanded=False)
+render_cat("Contaminantes",              vars_by_cat["Contaminantes"],              expanded=True)
+render_cat("Aditivos",                   vars_by_cat["Aditivos"],                   expanded=False)
 
 vars_sel = sorted(list(st.session_state["vars_checked"]))
 if not vars_sel:
     st.warning("Selecciona al menos una variable.")
     st.stop()
 
-st.success(f"Variables seleccionadas: {len(vars_sel)}")
+st.success(f"**{len(vars_sel)}** variable(s) seleccionada(s): {', '.join(vars_sel)}")
 
-# Convertir a numérico
 for v in vars_sel:
     df_calc[v] = convert_numeric(df_calc[v])
 
-# =========================
-# 6) Parámetros de cálculo
-# =========================
-st.markdown("## 6. Parámetros de cálculo")
+# ─────────────────────────────────────────────────────────────
+# 6. Calcular y mostrar resultados
+# ─────────────────────────────────────────────────────────────
+st.markdown('<div class="section-title">6️⃣ Resultados y descarga</div>', unsafe_allow_html=True)
 
-min_n = st.number_input("Mínimo de datos válidos para calcular", min_value=2, value=3, step=1)
-
-cA, cB = st.columns(2)
-with cA:
-    n_switch = st.number_input("Umbral para usar percentiles", min_value=3, value=10, step=1)
-    p_prec = st.slider("Percentil de precaución", 50, 99, 90, 1)
-    p_alert = st.slider("Percentil de condenatorio (alerta)", 50, 99, 95, 1)
-with cB:
-    k_prec = st.number_input("Factor para precaución con histórico corto", min_value=0.0, value=2.0, step=0.5)
-    k_alert = st.number_input("Factor para condenatorio con histórico corto", min_value=0.0, value=3.0, step=0.5)
-
-def calc_limits(series: pd.Series) -> dict:
-    s = series.dropna()
-    n = int(len(s))
-    if n < min_n:
-        return {"n": n, "metodo": "Insuficiente", "prec": np.nan, "alert": np.nan,
-                "mean": np.nan, "std": np.nan, "median": np.nan}
-
-    mean = float(s.mean())
-    std = float(s.std(ddof=1)) if n > 1 else 0.0
-    median = float(s.median())
-
-    if n >= n_switch:
-        prec = float(s.quantile(p_prec / 100))
-        alert = float(s.quantile(p_alert / 100))
-        metodo = f"Percentiles P{p_prec} y P{p_alert}"
-    else:
-        prec = mean + (k_prec * std)
-        alert = mean + (k_alert * std)
-        metodo = "Media y desviación"
-
-    return {"n": n, "metodo": metodo, "prec": prec, "alert": alert,
-            "mean": mean, "std": std, "median": median}
-
-def get_category(var: str) -> str:
-    for cat, lst in vars_by_cat.items():
-        if var in lst:
-            return cat
-    return "Sin categoría"
-
-# =========================
-# 7) Resultados y descarga
-# =========================
-st.markdown("## 7. Resultados y descarga")
-
-if st.button("Calcular límites"):
+if st.button("🔢 Calcular límites", type="primary"):
     filas = []
 
-    if modo == "Límites por componente":
-        for comp, g in df_calc.groupby(df_calc["COMPONENTE"].astype(str)):
+    with st.spinner("Calculando límites..."):
+        if modo == "Límites por componente":
+            for comp, g in df_calc.groupby(df_calc["COMPONENTE"].astype(str)):
+                for var in vars_sel:
+                    serie = apply_estado_filter(g, var, excluir_fuera_normal, var_to_status)
+                    out   = calc_limits(serie)
+                    filas.append({
+                        "Operación":             first_non_null(g[col_operacion])   if col_operacion   else None,
+                        "Tipo de equipo":        first_non_null(g[col_tipo_equipo]) if col_tipo_equipo else None,
+                        "Lubricante":            first_non_null(g[col_lubricante])  if col_lubricante  else None,
+                        "Componente":            comp,
+                        "Categoría":             get_category(var),
+                        "Variable":              var,
+                        "Unidad":                VAR_UNITS.get(var, ""),
+                        "Datos excluidos":       "Sí" if excluir_fuera_normal else "No",
+                        "IQR aplicado":          "Sí" if usar_iqr else "No",
+                        "Datos válidos (n)":     out["n"],
+                        "n original":            out.get("n_orig", out["n"]),
+                        "Método":                out["metodo"],
+                        "Mínimo":                out["vmin"],
+                        "Máximo":                out["vmax"],
+                        "Promedio":              out["mean"],
+                        "Desviación estándar":   out["std"],
+                        "Mediana":               out["median"],
+                        "Límite de precaución":  out["prec"],
+                        "Límite condenatorio":   out["alert"],
+                        "Primera fecha":         g["FECHA_INFORME"].min(),
+                        "Última fecha":          g["FECHA_INFORME"].max(),
+                    })
+        else:
             for var in vars_sel:
-                serie = apply_global_estado_filter(g, var, excluir_fuera_normal, var_to_status)
-                out = calc_limits(serie)
-
+                serie = apply_estado_filter(df_calc, var, excluir_fuera_normal, var_to_status)
+                out   = calc_limits(serie)
                 filas.append({
-                    "Operación": first_non_null(g[col_operacion]) if col_operacion else None,
-                    "Tipo de equipo": first_non_null(g[col_tipo_equipo]) if col_tipo_equipo else None,
-                    "Lubricante": first_non_null(g[col_lubricante]) if col_lubricante else None,
-                    "Componente": comp,
-                    "Categoría": get_category(var),
-                    "Variable": var,
-                    "Fuera de lo normal excluido": "Sí" if excluir_fuera_normal else "No",
-                    "Datos válidos": out["n"],
-                    "Método": out["metodo"],
-                    "Límite de precaución": out["prec"],
-                    "Límite condenatorio": out["alert"],
-                    "Promedio": out["mean"],
-                    "Desviación estándar": out["std"],
-                    "Mediana": out["median"],
-                    "Primera fecha": g["FECHA_INFORME"].min(),
-                    "Última fecha": g["FECHA_INFORME"].max(),
+                    "Componentes mezclados": etiqueta_mezcla,
+                    "Categoría":             get_category(var),
+                    "Variable":              var,
+                    "Unidad":                VAR_UNITS.get(var, ""),
+                    "Datos excluidos":       "Sí" if excluir_fuera_normal else "No",
+                    "IQR aplicado":          "Sí" if usar_iqr else "No",
+                    "Datos válidos (n)":     out["n"],
+                    "n original":            out.get("n_orig", out["n"]),
+                    "Método":                out["metodo"],
+                    "Mínimo":                out["vmin"],
+                    "Máximo":                out["vmax"],
+                    "Promedio":              out["mean"],
+                    "Desviación estándar":   out["std"],
+                    "Mediana":               out["median"],
+                    "Límite de precaución":  out["prec"],
+                    "Límite condenatorio":   out["alert"],
+                    "Primera fecha":         df_calc["FECHA_INFORME"].min(),
+                    "Última fecha":          df_calc["FECHA_INFORME"].max(),
                 })
-
-    else:
-        for var in vars_sel:
-            serie = apply_global_estado_filter(df_calc, var, excluir_fuera_normal, var_to_status)
-            out = calc_limits(serie)
-
-            filas.append({
-                "Componentes mezclados": etiqueta_mezcla,
-                "Categoría": get_category(var),
-                "Variable": var,
-                "Fuera de lo normal excluido": "Sí" if excluir_fuera_normal else "No",
-                "Datos válidos": out["n"],
-                "Método": out["metodo"],
-                "Límite de precaución": out["prec"],
-                "Límite condenatorio": out["alert"],
-                "Promedio": out["mean"],
-                "Desviación estándar": out["std"],
-                "Mediana": out["median"],
-                "Primera fecha": df_calc["FECHA_INFORME"].min(),
-                "Última fecha": df_calc["FECHA_INFORME"].max(),
-            })
 
     resultados = pd.DataFrame(filas)
 
-    dec = st.number_input("Decimales para visualización", min_value=0, value=0, step=1)
+    # ── Redondeo para visualización
+    dec = st.number_input("Decimales para visualización", min_value=0, value=1, step=1)
     vista = resultados.copy()
-    for c in ["Límite de precaución", "Límite condenatorio", "Promedio", "Desviación estándar", "Mediana"]:
+    num_cols_vis = [
+        "Mínimo", "Máximo", "Promedio", "Desviación estándar", "Mediana",
+        "Límite de precaución", "Límite condenatorio"
+    ]
+    for c in num_cols_vis:
         if c in vista.columns:
             vista[c] = pd.to_numeric(vista[c], errors="coerce").round(dec)
 
+    # ── Orden de columnas
     if modo == "Límites por componente":
         orden = [
-            "Operación", "Tipo de equipo", "Lubricante",
-            "Componente", "Categoría", "Variable",
-            "Fuera de lo normal excluido",
-            "Datos válidos", "Método",
+            "Operación", "Tipo de equipo", "Lubricante", "Componente",
+            "Categoría", "Variable", "Unidad",
+            "Datos excluidos", "IQR aplicado",
+            "Datos válidos (n)", "n original", "Método",
+            "Mínimo", "Máximo", "Promedio", "Desviación estándar", "Mediana",
             "Límite de precaución", "Límite condenatorio",
-            "Promedio", "Desviación estándar", "Mediana",
-            "Primera fecha", "Última fecha"
+            "Primera fecha", "Última fecha",
         ]
     else:
         orden = [
-            "Componentes mezclados", "Categoría", "Variable",
-            "Fuera de lo normal excluido",
-            "Datos válidos", "Método",
+            "Componentes mezclados", "Categoría", "Variable", "Unidad",
+            "Datos excluidos", "IQR aplicado",
+            "Datos válidos (n)", "n original", "Método",
+            "Mínimo", "Máximo", "Promedio", "Desviación estándar", "Mediana",
             "Límite de precaución", "Límite condenatorio",
-            "Promedio", "Desviación estándar", "Mediana",
-            "Primera fecha", "Última fecha"
+            "Primera fecha", "Última fecha",
         ]
 
     columnas = [c for c in orden if c in vista.columns]
-    st.dataframe(vista[columnas], use_container_width=True)
+    styled   = vista[columnas].style.apply(style_results, axis=None)
+    st.dataframe(styled, use_container_width=True, height=460)
 
-    bytes_xlsx = to_excel_bytes(vista[columnas], sheet_name="Límites")
-    filename = "limites_por_componente.xlsx" if modo == "Límites por componente" else "limites_mezcla_componentes.xlsx"
+    # ── Métricas de resumen
+    mask_insuf   = resultados["Método"].astype(str).str.contains("Insuf", na=False)
+    total_calc_r = resultados[~mask_insuf]
+    total_insuf  = resultados[mask_insuf]
 
-    st.download_button(
-        "Descargar Excel",
-        data=bytes_xlsx,
-        file_name=filename,
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Límites calculados",          len(total_calc_r))
+    m2.metric("Sin suficientes datos",       len(total_insuf))
+    if modo == "Límites por componente" and "Componente" in resultados.columns:
+        m3.metric("Componentes procesados",  resultados["Componente"].nunique())
+    else:
+        m3.metric("Variables procesadas",    len(vars_sel))
+
+    # ── Gráficas de distribución
+    max_vars_plot = 12
+    if not total_calc_r.empty and len(vars_sel) <= max_vars_plot:
+        with st.expander("📊 Distribuciones y límites por variable", expanded=True):
+            st.caption(
+                "Histograma de los datos disponibles con líneas de límite. "
+                "🟡 Precaución · 🔴 Condenatorio · 🔵 Media"
+            )
+            for var_p in vars_sel:
+                subset = total_calc_r[total_calc_r["Variable"] == var_p]
+                if subset.empty:
+                    continue
+
+                if modo == "Límites por componente" and "Componente" in subset.columns:
+                    comp_list = subset["Componente"].unique().tolist()
+                else:
+                    comp_list = [etiqueta_mezcla or "Mezcla"]
+
+                ncols_p = min(len(comp_list), 3)
+                nrows_p = (len(comp_list) + ncols_p - 1) // ncols_p
+                fig, axes = plt.subplots(
+                    nrows_p, ncols_p,
+                    figsize=(5.5 * ncols_p, 3.8 * nrows_p),
+                    squeeze=False
+                )
+                axes_flat = axes.flatten()
+
+                unit = VAR_UNITS.get(var_p, "")
+                title_var = f"{var_p}" + (f"  [{unit}]" if unit else "")
+                fig.suptitle(title_var, fontsize=11, fontweight="bold", y=1.01)
+
+                for i, comp in enumerate(comp_list):
+                    ax = axes_flat[i]
+
+                    if modo == "Límites por componente" and "Componente" in subset.columns:
+                        data_plot = df_calc[
+                            df_calc["COMPONENTE"].astype(str) == str(comp)
+                        ][var_p].dropna()
+                        row_lim = subset[subset["Componente"] == comp]
+                    else:
+                        data_plot = df_calc[var_p].dropna()
+                        row_lim   = subset
+
+                    if row_lim.empty or data_plot.empty:
+                        ax.text(0.5, 0.5, "Sin datos", ha="center", va="center",
+                                transform=ax.transAxes, color="#9ca3af")
+                        ax.set_title(str(comp)[:40], fontsize=9)
+                        continue
+
+                    row_lim = row_lim.iloc[0]
+                    p_val   = row_lim["Límite de precaución"]
+                    a_val   = row_lim["Límite condenatorio"]
+                    mean_v  = row_lim["Promedio"]
+
+                    n_bins = min(25, max(5, len(data_plot) // 3 + 1))
+                    ax.hist(data_plot, bins=n_bins, color="#3b82f6", alpha=0.65,
+                            edgecolor="white", linewidth=0.5)
+
+                    handles = []
+                    if pd.notna(p_val):
+                        ax.axvline(p_val, color="#d97706", lw=2, ls="--")
+                        handles.append(mpatches.Patch(color="#d97706",
+                                                       label=f"Precaución: {p_val:.1f}"))
+                    if pd.notna(a_val):
+                        ax.axvline(a_val, color="#dc2626", lw=2, ls="-")
+                        handles.append(mpatches.Patch(color="#dc2626",
+                                                       label=f"Condenatorio: {a_val:.1f}"))
+                    if pd.notna(mean_v):
+                        ax.axvline(mean_v, color="#1a3a5c", lw=1.5, ls=":")
+                        handles.append(mpatches.Patch(color="#1a3a5c",
+                                                       label=f"Media: {mean_v:.1f}"))
+
+                    if handles:
+                        ax.legend(handles=handles, fontsize=7, loc="upper right",
+                                  framealpha=0.85, edgecolor="none")
+
+                    ax.set_title(str(comp)[:45], fontsize=9, color="#374151")
+                    ax.set_xlabel(unit if unit else "", fontsize=8, color="#6b7280")
+                    ax.set_ylabel("Frecuencia", fontsize=8, color="#6b7280")
+                    ax.tick_params(labelsize=7)
+                    ax.spines[["top", "right"]].set_visible(False)
+                    ax.grid(axis="y", alpha=0.3, linewidth=0.5)
+
+                for j in range(len(comp_list), len(axes_flat)):
+                    axes_flat[j].set_visible(False)
+
+                plt.tight_layout()
+                st.pyplot(fig, use_container_width=True)
+                plt.close(fig)
+    elif len(vars_sel) > max_vars_plot:
+        st.info(f"Las gráficas se muestran cuando hay ≤ {max_vars_plot} variables seleccionadas.")
+
+    # ── Descarga
+    st.markdown("---")
+    filename_base = (
+        "limites_por_componente"
+        if modo == "Límites por componente"
+        else "limites_mezcla_componentes"
     )
+
+    dl1, dl2 = st.columns(2)
+    with dl1:
+        st.download_button(
+            "⬇️ Descargar Excel con formato",
+            data=to_excel_colored(vista[columnas]),
+            file_name=f"{filename_base}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
+    with dl2:
+        st.download_button(
+            "⬇️ Descargar CSV (Power BI / Excel simple)",
+            data=vista[columnas].to_csv(index=False).encode("utf-8"),
+            file_name=f"{filename_base}.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
+
 else:
-    st.info("Aplica filtros, selecciona el modo, elige componentes y variables, y luego calcula los límites.")
+    st.info(
+        "⬆️ Completa los pasos anteriores y presiona **Calcular límites** para ver los resultados."
+    )
 
-
-
-
-
-
-
-
-
-
-
+# ─────────────────────────────────────────────────────────────
+# Footer
+# ─────────────────────────────────────────────────────────────
+st.markdown(
+    "<div class='footer'>"
+    "© 2026 · Javier Parada · Análisis de Lubricación · "
+    "Mobil™ es marca registrada de Exxon Mobil Corporation · Uso interno"
+    "</div>",
+    unsafe_allow_html=True
+)
