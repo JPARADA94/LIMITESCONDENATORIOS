@@ -135,30 +135,92 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
+with st.expander("📖 ¿Qué hace esta herramienta y cómo usarla?", expanded=False):
+    st.markdown("""
+    ### ¿Para qué sirve?
+    Esta herramienta te ayuda a **definir cuándo un componente está en problemas**, basándose en el
+    historial real de tus análisis de aceite. En lugar de usar límites genéricos del fabricante,
+    calcula límites **específicos para tu flota**, usando sus propios datos históricos.
+
+    El resultado son dos alertas por variable (hierro, cobre, agua, etc.):
+    - 🟡 **Límite de Precaución** — El valor está subiendo. Hay que poner el componente en vigilancia
+      y planificar una inspección. No es urgente, pero no lo ignores.
+    - 🔴 **Límite Condenatorio** — El valor está muy por encima de lo normal. El componente
+      probablemente tiene un problema activo. Considera sacarlo de servicio o intervenir pronto.
+
+    ---
+    ### Paso a paso
+    | Paso | Qué hacer | Por qué |
+    |------|-----------|---------|
+    | **1** | Carga el Excel de SmartAssistance | La app lee tu historial. No modifica el archivo. |
+    | **2** | Aplica filtros si quieres (opcional) | Para calcular límites específicos por operación, tipo de equipo o lubricante. Si no filtras, usa todo el historial. |
+    | **3** | Revisa el inventario | Verifica cuántas muestras tiene cada componente. Con pocas muestras, los límites son menos confiables. |
+    | **4** | Elige el modo de cálculo | *Por componente*: límites distintos para cada equipo. *Mezcla*: un único límite compartido (útil cuando tienes pocos datos por equipo). |
+    | **5** | Selecciona los componentes | Los que quieres analizar en esta sesión. |
+    | **6** | Marca las variables | Las sustancias que te importa vigilar (hierro, agua, viscosidad, etc.). |
+    | **7** | Presiona "Calcular límites" | La app calcula y muestra los resultados listos para exportar. |
+
+    ---
+    ### ¿Qué significan los colores del resultado?
+    - 🟡 **Fondo amarillo** en la columna de Precaución → ese es tu umbral de alerta temprana.
+    - 🔴 **Fondo rojo** en la columna Condenatorio → ese es tu umbral de acción inmediata.
+    - ⬜ **Fondo gris** → no había suficientes muestras para calcular ese límite con confianza.
+
+    > **Importante:** los límites calculados son tan buenos como el historial que los respalda.
+    > Un componente con 5 muestras dará límites menos confiables que uno con 50.
+    """)
+
 # ─────────────────────────────────────────────────────────────
 # Sidebar — Parámetros de cálculo
 # ─────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("## ⚙️ Parámetros de cálculo")
 
+    with st.expander("❓ ¿Para qué sirven estos parámetros?", expanded=False):
+        st.caption(
+            "Estos controles ajustan **cómo se calculan los límites**. "
+            "Si no estás seguro, deja los valores por defecto — están calibrados para "
+            "análisis de aceite estándar. Solo cámbialos si tienes un criterio técnico específico."
+        )
+
     min_n = st.number_input(
         "Mínimo de datos válidos",
         min_value=2, value=3, step=1,
-        help="Componentes con menos datos se marcan como Insuficiente."
+        help=(
+            "Cantidad mínima de análisis que necesita un componente para calcularle límites. "
+            "Con 1 o 2 muestras el resultado no sería estadísticamente confiable, "
+            "así que la app lo marca como 'Insuficiente' y no calcula. "
+            "Valor recomendado: 3 a 5."
+        )
     )
 
     st.markdown("**Umbral de método**")
     n_switch = st.number_input(
         "Usar percentiles si n ≥",
         min_value=3, value=10, step=1,
-        help="Con n menor, se aplica Media ± k·σ."
+        help=(
+            "Cuando un componente tiene MUCHAS muestras (n ≥ este valor), la app usa percentiles "
+            "(método más robusto y preciso). Cuando tiene POCAS muestras, usa promedio + desviación "
+            "(método más conservador). "
+            "Valor recomendado: 10."
+        )
     )
 
-    st.markdown("**Percentiles** *(n grande)*")
+    st.markdown("**Percentiles** *(historial largo, n ≥ umbral)*")
+    st.caption(
+        "P90 = el 90% de tus análisis históricos estuvieron por debajo de este valor. "
+        "Es decir: si el hierro llega a P90, ya está en el 10% más alto que has visto. Eso es una señal."
+    )
     p_prec  = st.slider("Percentil Precaución",    50, 99, 90, 1)
     p_alert = st.slider("Percentil Condenatorio",  50, 99, 95, 1)
 
-    st.markdown("**Factores k** *(n pequeño)*")
+    st.markdown("**Factores k** *(historial corto, n < umbral)*")
+    st.caption(
+        "Cuando hay pocos datos, el límite se calcula como: "
+        "Promedio + k × Desviación. "
+        "k=2 captura ~95% de los valores normales. k=3 captura ~99.7%. "
+        "Valores mayores de k = límites más permisivos."
+    )
     k_prec  = st.number_input("k Precaución  (μ + k·σ)",    min_value=0.0, value=2.0, step=0.5)
     k_alert = st.number_input("k Condenatorio (μ + k·σ)",  min_value=0.0, value=3.0, step=0.5)
 
@@ -166,7 +228,12 @@ with st.sidebar:
     usar_iqr = st.checkbox(
         "Limpiar outliers (IQR) antes de calcular",
         value=False,
-        help="Elimina valores fuera de Q1−1.5·IQR / Q3+1.5·IQR. Recomendado para PQI."
+        help=(
+            "Activa esto si tienes muestras con valores extremos sospechosos "
+            "(errores de laboratorio, contaminación puntual, etc.) que inflarían los límites. "
+            "La app descarta automáticamente los valores muy alejados del rango normal. "
+            "Especialmente útil para la variable PQI."
+        )
     )
 
     st.divider()
@@ -453,6 +520,11 @@ with st.expander("🔍 Detalle de variables encontradas", expanded=False):
 # 1. Filtros de análisis
 # ─────────────────────────────────────────────────────────────
 st.markdown('<div class="section-title">1️⃣ Filtros de análisis</div>', unsafe_allow_html=True)
+st.caption(
+    "**Opcional.** Si quieres que los límites reflejen solo un contexto específico "
+    "(por ejemplo, una mina, un tipo de equipo o un lubricante particular), "
+    "activa los filtros que correspondan. Si no filtras, el cálculo usa todo el historial cargado."
+)
 
 df_f = df.copy()
 
@@ -505,6 +577,13 @@ st.caption(f"Registros tras filtros: **{len(df_f):,}** de {len(df):,}")
 # 2. Inventario de componentes
 # ─────────────────────────────────────────────────────────────
 st.markdown('<div class="section-title">2️⃣ Inventario de componentes</div>', unsafe_allow_html=True)
+st.caption(
+    "Esta tabla muestra cuántos análisis tiene cada componente en el historial. "
+    "**Más muestras = límites más confiables.** "
+    "Si un componente tiene menos de 10 muestras, los límites serán orientativos; "
+    "con 30 o más, son estadísticamente robustos. "
+    "Úsala para decidir cuáles vale la pena analizar."
+)
 
 group_cols = ["COMPONENTE"]
 if col_operacion:   group_cols.append(col_operacion)
@@ -527,6 +606,19 @@ st.dataframe(inventario, use_container_width=True, height=260)
 # 3. Modo de cálculo
 # ─────────────────────────────────────────────────────────────
 st.markdown('<div class="section-title">3️⃣ Modo de cálculo</div>', unsafe_allow_html=True)
+
+with st.expander("❓ ¿Cuál modo debo elegir?", expanded=False):
+    st.markdown("""
+    **Límites por componente** *(opción recomendada cuando tienes suficiente historial)*
+    Cada componente recibe sus propios límites, calculados únicamente con sus muestras.
+    Ejemplo: el Motor 1 puede tener un límite de hierro distinto al Motor 2 si su operación
+    o desgaste típico es diferente.
+
+    **Límite único mezclando componentes** *(útil cuando cada componente tiene pocos datos)*
+    Combina el historial de varios componentes similares para calcular un solo límite compartido.
+    Ejemplo: si tienes 5 motores iguales con 8 muestras cada uno, mezclarlos da 40 muestras
+    y un límite mucho más confiable. Úsalo cuando los equipos sean del mismo modelo y operación.
+    """)
 
 modo = st.radio(
     "¿Cómo quieres calcular los límites?",
@@ -582,10 +674,30 @@ if df_calc.empty:
 # ─────────────────────────────────────────────────────────────
 st.markdown('<div class="section-title">5️⃣ Variables para el cálculo</div>', unsafe_allow_html=True)
 
+with st.expander("❓ ¿Qué variable debo seleccionar?", expanded=False):
+    st.markdown("""
+    Las variables están agrupadas por categoría. Selecciona las que quieres incluir en el análisis:
+
+    | Categoría | Qué mide | Ejemplos de uso |
+    |-----------|----------|-----------------|
+    | ⚙️ **Desgaste** | Metales que se desprenden de las piezas en movimiento | Hierro (cuerpo/cilindros), Cobre (cojinetes/enfriadores), PQI (partículas grandes) |
+    | 🧪 **Propiedades del lubricante** | Condición del aceite en sí | Viscosidad (fluidez), BN (reserva alcalina), Oxidación (degradación del aceite) |
+    | ⚠️ **Contaminantes** | Sustancias que no deberían estar en el aceite | Agua (fuga de refrigerante o condensación), Silicio (polvo/tierra), Sodio (refrigerante) |
+    | 🔬 **Aditivos** | Paquete de aditivos del lubricante | Calcio, Zinc, Fósforo (se consumen con el uso; su baja indica que el aceite está agotado) |
+
+    **Recomendación:** selecciona todas las variables disponibles para tu componente.
+    Puedes calcular límites para todas de una vez y solo exportar las que uses en tus reportes.
+    """)
+
 excluir_fuera_normal = st.toggle(
     "Excluir resultados fuera de lo normal (Precaución y Alerta) del cálculo base",
     value=True,
-    help="Si está activo, los registros con estado Precaución o Alerta no se usan para calcular los límites."
+    help=(
+        "ACTIVADO (recomendado): la app calcula los límites usando solo las muestras 'Normales', "
+        "ignorando las que ya estaban en Precaución o Alerta. "
+        "Esto evita que valores de falla pasada inflen el límite y lo hagan demasiado permisivo. "
+        "DESACTIVADO: usa todas las muestras, incluidas las que tuvieron algún problema."
+    )
 )
 
 if "vars_checked" not in st.session_state:
@@ -627,6 +739,13 @@ for v in vars_sel:
 # 6. Calcular y mostrar resultados
 # ─────────────────────────────────────────────────────────────
 st.markdown('<div class="section-title">6️⃣ Resultados y descarga</div>', unsafe_allow_html=True)
+st.caption(
+    "Al presionar el botón, la app calcula los límites y muestra: "
+    "la tabla de resultados con código de color, "
+    "el resumen de cuántos límites se pudieron calcular, "
+    "y los histogramas de distribución por variable. "
+    "Luego puedes descargar el archivo en Excel (con formato de colores) o CSV para Power BI."
+)
 
 if st.button("🔢 Calcular límites", type="primary"):
     filas = []
@@ -721,6 +840,28 @@ if st.button("🔢 Calcular límites", type="primary"):
 
     columnas = [c for c in orden if c in vista.columns]
     styled   = vista[columnas].style.apply(style_results, axis=None)
+
+    with st.expander("📋 ¿Qué significa cada columna?", expanded=False):
+        st.markdown("""
+        | Columna | Significado |
+        |---------|-------------|
+        | **Datos válidos (n)** | Cantidad de análisis usados para calcular (después de filtros y exclusiones). |
+        | **n original** | Total de análisis antes de limpiar outliers o excluir estados anormales. |
+        | **Método** | Cómo se calcularon los límites: *Percentiles* si había muchos datos, *Media+kσ* si había pocos. |
+        | **Mínimo / Máximo** | El valor más bajo y más alto que se ha visto históricamente para ese componente y variable. |
+        | **Promedio** | El valor típico del historial. |
+        | **Desviación estándar** | Qué tanto varían los valores. Alta variación → mayor incertidumbre en los límites. |
+        | **Mediana** | El valor central del historial (menos afectado por valores extremos que el promedio). |
+        | 🟡 **Límite de Precaución** | Umbral de vigilancia. Si un análisis supera este valor, el componente merece atención. |
+        | 🔴 **Límite Condenatorio** | Umbral de acción. Si supera este valor, hay alta probabilidad de falla activa. |
+        | **Primera / Última fecha** | Rango de fechas del historial usado en el cálculo. |
+
+        **Colores en la tabla:**
+        - 🟡 Amarillo = columna Precaución (umbral de vigilancia)
+        - 🔴 Rojo claro = columna Condenatorio (umbral de acción)
+        - ⬜ Gris = fila con datos insuficientes (no se calcularon límites)
+        """)
+
     st.dataframe(styled, use_container_width=True, height=460)
 
     # ── Métricas de resumen
