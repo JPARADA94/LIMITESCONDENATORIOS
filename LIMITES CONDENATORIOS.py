@@ -9,8 +9,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from io import BytesIO
-import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
+import plotly.graph_objects as go
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
@@ -152,7 +151,7 @@ with st.expander("📖 ¿Qué hace esta herramienta y cómo usarla?", expanded=F
     ### Paso a paso
     | Paso | Qué hacer | Por qué |
     |------|-----------|---------|
-    | **1** | Carga el Excel de SmartAssistance | La app lee tu historial. No modifica el archivo. |
+    | **1** | Carga uno o más Excel de SmartAssistance | La app combina todos los archivos automáticamente. No modifica los archivos. |
     | **2** | Aplica filtros si quieres (opcional) | Para calcular límites específicos por operación, tipo de equipo o lubricante. Si no filtras, usa todo el historial. |
     | **3** | Revisa el inventario | Verifica cuántas muestras tiene cada componente. Con pocas muestras, los límites son menos confiables. |
     | **4** | Elige el modo de cálculo | *Por componente*: límites distintos para cada equipo. *Mezcla*: un único límite compartido (útil cuando tienes pocos datos por equipo). |
@@ -313,7 +312,7 @@ def calc_limits(series: pd.Series) -> dict:
 
     base = {"n": n_orig, "n_orig": n_orig, "prec": np.nan, "alert": np.nan,
             "mean": np.nan, "std": np.nan, "median": np.nan,
-            "vmin": np.nan, "vmax": np.nan}
+            "vmin": np.nan, "vmax": np.nan, "confiabilidad": "⚠️ Insuficiente"}
 
     if n_orig < min_n:
         return {**base, "metodo": "Insuficiente"}
@@ -340,10 +339,17 @@ def calc_limits(series: pd.Series) -> dict:
         alert = mean + k_alert * std
         metodo = f"Media+{k_prec}σ / +{k_alert}σ"
 
+    if n >= 30:
+        confiabilidad = "★★★ Alta"
+    elif n >= 10:
+        confiabilidad = "★★☆ Media"
+    else:
+        confiabilidad = "★☆☆ Baja"
+
     return {"n": n, "n_orig": n_orig, "metodo": metodo,
             "prec": prec, "alert": alert,
             "mean": mean, "std": std, "median": median,
-            "vmin": vmin, "vmax": vmax}
+            "vmin": vmin, "vmax": vmax, "confiabilidad": confiabilidad}
 
 def get_category(var: str) -> str:
     for cat, lst in vars_by_cat.items():
@@ -430,10 +436,11 @@ st.markdown('<div class="section-title">📂 Carga del archivo</div>', unsafe_al
 
 col_up, col_info = st.columns([2, 1])
 with col_up:
-    archivo = st.file_uploader(
-        "Selecciona el Excel exportado desde SmartAssistance (ARCHIVO 2)",
+    archivos = st.file_uploader(
+        "Selecciona uno o más Excel exportados desde SmartAssistance (ARCHIVO 2)",
         type=["xlsx"],
-        help="El archivo no se modifica. Solo se lee en memoria."
+        accept_multiple_files=True,
+        help="Puedes seleccionar varios archivos a la vez. No se modifican, solo se leen en memoria."
     )
 with col_info:
     st.info(
@@ -442,18 +449,39 @@ with col_info:
         "**Columnas opcionales:** NOMBRE_OPERACION, TIPO_EQUIPO, PRODUCTO"
     )
 
-if not archivo:
+if not archivos:
     st.markdown(
         "<div style='text-align:center; padding:3rem 0; color:#9ca3af;'>"
         "<div style='font-size:3rem;'>📊</div>"
         "<div style='font-size:1.1rem; margin-top:0.5rem;'>"
-        "Carga un archivo Excel para comenzar el análisis"
+        "Carga uno o más archivos Excel para comenzar el análisis"
         "</div></div>",
         unsafe_allow_html=True
     )
     st.stop()
 
-df = load_excel(archivo).copy()
+dfs_cargados = []
+archivos_con_error = []
+for arch in archivos:
+    try:
+        df_i = load_excel(arch).copy()
+        df_i["ARCHIVO_ORIGEN"] = arch.name
+        dfs_cargados.append(df_i)
+    except Exception as e:
+        archivos_con_error.append(f"{arch.name}: {e}")
+
+if archivos_con_error:
+    st.error("No se pudieron leer los siguientes archivos:\n" + "\n".join(archivos_con_error))
+
+if not dfs_cargados:
+    st.stop()
+
+df = pd.concat(dfs_cargados, ignore_index=True)
+
+if len(archivos) > 1:
+    filas_por_archivo = {arch.name: len(df_i) for arch, df_i in zip(archivos, dfs_cargados)}
+    resumen_archivos = " · ".join(f"**{n}**: {r:,} filas" for n, r in filas_por_archivo.items())
+    st.success(f"{len(archivos)} archivos cargados y combinados — {len(df):,} registros totales: {resumen_archivos}")
 
 required_cols = ["COMPONENTE", "FECHA_INFORME"]
 missing = [c for c in required_cols if c not in df.columns]
@@ -776,6 +804,7 @@ if st.button("🔢 Calcular límites", type="primary"):
                         "Mediana":               out["median"],
                         "Límite de precaución":  out["prec"],
                         "Límite condenatorio":   out["alert"],
+                        "Confiabilidad":         out.get("confiabilidad", ""),
                         "Primera fecha":         g["FECHA_INFORME"].min(),
                         "Última fecha":          g["FECHA_INFORME"].max(),
                     })
@@ -800,6 +829,7 @@ if st.button("🔢 Calcular límites", type="primary"):
                     "Mediana":               out["median"],
                     "Límite de precaución":  out["prec"],
                     "Límite condenatorio":   out["alert"],
+                    "Confiabilidad":         out.get("confiabilidad", ""),
                     "Primera fecha":         df_calc["FECHA_INFORME"].min(),
                     "Última fecha":          df_calc["FECHA_INFORME"].max(),
                 })
@@ -823,7 +853,7 @@ if st.button("🔢 Calcular límites", type="primary"):
             "Operación", "Tipo de equipo", "Lubricante", "Componente",
             "Categoría", "Variable", "Unidad",
             "Datos excluidos", "IQR aplicado",
-            "Datos válidos (n)", "n original", "Método",
+            "Datos válidos (n)", "n original", "Método", "Confiabilidad",
             "Mínimo", "Máximo", "Promedio", "Desviación estándar", "Mediana",
             "Límite de precaución", "Límite condenatorio",
             "Primera fecha", "Última fecha",
@@ -832,7 +862,7 @@ if st.button("🔢 Calcular límites", type="primary"):
         orden = [
             "Componentes mezclados", "Categoría", "Variable", "Unidad",
             "Datos excluidos", "IQR aplicado",
-            "Datos válidos (n)", "n original", "Método",
+            "Datos válidos (n)", "n original", "Método", "Confiabilidad",
             "Mínimo", "Máximo", "Promedio", "Desviación estándar", "Mediana",
             "Límite de precaución", "Límite condenatorio",
             "Primera fecha", "Última fecha",
@@ -870,102 +900,269 @@ if st.button("🔢 Calcular límites", type="primary"):
     total_insuf  = resultados[mask_insuf]
 
     m1, m2, m3 = st.columns(3)
-    m1.metric("Límites calculados",          len(total_calc_r))
-    m2.metric("Sin suficientes datos",       len(total_insuf))
+    m1.metric("Límites calculados",         len(total_calc_r))
+    m2.metric("Sin suficientes datos",      len(total_insuf))
     if modo == "Límites por componente" and "Componente" in resultados.columns:
-        m3.metric("Componentes procesados",  resultados["Componente"].nunique())
+        m3.metric("Componentes procesados", resultados["Componente"].nunique())
     else:
-        m3.metric("Variables procesadas",    len(vars_sel))
+        m3.metric("Variables procesadas",   len(vars_sel))
 
-    # ── Gráficas de distribución
+    # ── Semáforo: estado actual vs límites calculados
+    if modo == "Límites por componente" and "Componente" in total_calc_r.columns:
+        st.markdown('<div class="section-title">🚦 Estado actual vs límites calculados</div>', unsafe_allow_html=True)
+        st.caption(
+            "Cruza el **último análisis real** de cada componente contra los límites recién calculados. "
+            "Así sabes qué equipos ya superan hoy sus propios límites históricos."
+        )
+
+        sem_filas = []
+        for _, lim_row in total_calc_r.iterrows():
+            comp      = lim_row.get("Componente")
+            var       = lim_row.get("Variable")
+            prec_lim  = lim_row.get("Límite de precaución")
+            alert_lim = lim_row.get("Límite condenatorio")
+            unit      = lim_row.get("Unidad", "")
+
+            df_comp = df_calc[df_calc["COMPONENTE"].astype(str) == str(comp)]
+            df_comp_sorted = df_comp.sort_values("FECHA_INFORME", ascending=False)
+
+            val, fecha_ult = np.nan, None
+            if not df_comp_sorted.empty and var in df_comp_sorted.columns:
+                row_ult  = df_comp_sorted.iloc[0]
+                val      = row_ult[var]
+                fecha_ult = row_ult.get("FECHA_INFORME")
+
+            try:
+                val_f = float(val)
+            except (TypeError, ValueError):
+                val_f = np.nan
+
+            if pd.isna(val_f):
+                estado_actual = "⬜ Sin dato"
+                pct_txt = "—"
+            elif pd.notna(alert_lim) and val_f >= float(alert_lim):
+                estado_actual = "🔴 Supera Condenatorio"
+                pct = round(val_f / float(alert_lim) * 100) if float(alert_lim) > 0 else None
+                pct_txt = f"{pct}% del lím. cond." if pct else "—"
+            elif pd.notna(prec_lim) and val_f >= float(prec_lim):
+                estado_actual = "🟡 Supera Precaución"
+                pct = round(val_f / float(prec_lim) * 100) if float(prec_lim) > 0 else None
+                pct_txt = f"{pct}% del lím. prec." if pct else "—"
+            elif pd.notna(prec_lim):
+                estado_actual = "🟢 Normal"
+                pct = round(val_f / float(prec_lim) * 100) if float(prec_lim) > 0 else None
+                pct_txt = f"{pct}% del lím. prec." if pct else "—"
+            else:
+                estado_actual = "⬜ Sin límite"
+                pct_txt = "—"
+
+            sem_filas.append({
+                "Componente":       comp,
+                "Variable":         var,
+                "Unidad":           unit,
+                "Última muestra":   str(fecha_ult)[:10] if fecha_ult else "—",
+                "Valor actual":     round(val_f, dec) if pd.notna(val_f) else "—",
+                "Lím. Precaución":  round(float(prec_lim), dec) if pd.notna(prec_lim) else "—",
+                "Lím. Condenatorio":round(float(alert_lim), dec) if pd.notna(alert_lim) else "—",
+                "% respecto al límite": pct_txt,
+                "Estado actual":    estado_actual,
+            })
+
+        df_sem = pd.DataFrame(sem_filas)
+
+        def style_semaforo(df_s: pd.DataFrame) -> pd.DataFrame:
+            style = pd.DataFrame("", index=df_s.index, columns=df_s.columns)
+            if "Estado actual" not in df_s.columns:
+                return style
+            for idx, row in df_s.iterrows():
+                est = str(row.get("Estado actual", ""))
+                if "Condenatorio" in est:
+                    style.loc[idx]               = "background-color: #fee2e2"
+                    style.loc[idx, "Estado actual"] = "background-color: #fee2e2; font-weight:bold; color:#dc2626"
+                elif "Precaución" in est:
+                    style.loc[idx]               = "background-color: #fef9c3"
+                    style.loc[idx, "Estado actual"] = "background-color: #fef9c3; font-weight:bold; color:#d97706"
+                elif "Normal" in est:
+                    style.loc[idx, "Estado actual"] = "color:#16a34a; font-weight:bold"
+            return style
+
+        st.dataframe(df_sem.style.apply(style_semaforo, axis=None), use_container_width=True, height=380)
+
+        n_ok   = sum(1 for r in sem_filas if "Normal"       in r["Estado actual"])
+        n_prec = sum(1 for r in sem_filas if "Precaución"   in r["Estado actual"])
+        n_cond = sum(1 for r in sem_filas if "Condenatorio" in r["Estado actual"])
+        sa1, sa2, sa3 = st.columns(3)
+        sa1.metric("🟢 Normales",         n_ok)
+        sa2.metric("🟡 En Precaución",    n_prec)
+        sa3.metric("🔴 En Condenatorio",  n_cond)
+
+    # ── Gráficas interactivas por variable (Plotly)
     max_vars_plot = 12
     if not total_calc_r.empty and len(vars_sel) <= max_vars_plot:
-        with st.expander("📊 Distribuciones y límites por variable", expanded=True):
-            st.caption(
-                "Histograma de los datos disponibles con líneas de límite. "
-                "🟡 Precaución · 🔴 Condenatorio · 🔵 Media"
+        st.markdown('<div class="section-title">📈 Análisis gráfico por variable</div>', unsafe_allow_html=True)
+        st.caption("Selecciona una variable para ver su distribución histórica y su evolución en el tiempo.")
+
+        var_opciones = [v for v in vars_sel if not total_calc_r[total_calc_r["Variable"] == v].empty]
+        var_elegida  = st.selectbox("Variable a visualizar", options=var_opciones,
+                                    format_func=lambda v: f"{v}  [{VAR_UNITS.get(v,'')}]" if VAR_UNITS.get(v) else v)
+
+        if var_elegida:
+            subset_g = total_calc_r[total_calc_r["Variable"] == var_elegida]
+            unit_g   = VAR_UNITS.get(var_elegida, "")
+
+            if modo == "Límites por componente" and "Componente" in subset_g.columns:
+                comp_list_g = subset_g["Componente"].unique().tolist()
+            else:
+                comp_list_g = [etiqueta_mezcla or "Mezcla"]
+
+            comp_ver = st.selectbox("Componente", options=comp_list_g) if len(comp_list_g) > 1 else comp_list_g[0]
+
+            if modo == "Límites por componente" and "Componente" in subset_g.columns:
+                data_hist = df_calc[df_calc["COMPONENTE"].astype(str) == str(comp_ver)]
+                row_lim_g = subset_g[subset_g["Componente"] == comp_ver]
+            else:
+                data_hist = df_calc.copy()
+                row_lim_g = subset_g
+
+            row_lim_g = row_lim_g.iloc[0] if not row_lim_g.empty else pd.Series()
+            p_val_g   = row_lim_g.get("Límite de precaución", np.nan)
+            a_val_g   = row_lim_g.get("Límite condenatorio",  np.nan)
+            mean_g    = row_lim_g.get("Promedio", np.nan)
+
+            ts_data = (
+                data_hist[["FECHA_INFORME", var_elegida]]
+                .dropna()
+                .sort_values("FECHA_INFORME")
+                .copy()
             )
-            for var_p in vars_sel:
-                subset = total_calc_r[total_calc_r["Variable"] == var_p]
-                if subset.empty:
-                    continue
+            ts_data[var_elegida] = pd.to_numeric(ts_data[var_elegida], errors="coerce")
+            ts_data = ts_data.dropna()
 
-                if modo == "Límites por componente" and "Componente" in subset.columns:
-                    comp_list = subset["Componente"].unique().tolist()
+            tab_ts, tab_dist = st.tabs(["📈 Tendencia en el tiempo", "📊 Distribución histórica"])
+
+            # ── Tab 1: Serie de tiempo ──────────────────────────────
+            with tab_ts:
+                if ts_data.empty:
+                    st.info("No hay datos históricos suficientes para este componente y variable.")
                 else:
-                    comp_list = [etiqueta_mezcla or "Mezcla"]
+                    colors_ts = []
+                    for val_ts in ts_data[var_elegida]:
+                        if pd.notna(a_val_g) and val_ts >= float(a_val_g):
+                            colors_ts.append("#dc2626")
+                        elif pd.notna(p_val_g) and val_ts >= float(p_val_g):
+                            colors_ts.append("#d97706")
+                        else:
+                            colors_ts.append("#3b82f6")
 
-                ncols_p = min(len(comp_list), 3)
-                nrows_p = (len(comp_list) + ncols_p - 1) // ncols_p
-                fig, axes = plt.subplots(
-                    nrows_p, ncols_p,
-                    figsize=(5.5 * ncols_p, 3.8 * nrows_p),
-                    squeeze=False
-                )
-                axes_flat = axes.flatten()
+                    fig_ts = go.Figure()
 
-                unit = VAR_UNITS.get(var_p, "")
-                title_var = f"{var_p}" + (f"  [{unit}]" if unit else "")
-                fig.suptitle(title_var, fontsize=11, fontweight="bold", y=1.01)
+                    # Zonas de color de fondo
+                    y_max = ts_data[var_elegida].max()
+                    if pd.notna(p_val_g) and pd.notna(a_val_g):
+                        fig_ts.add_hrect(y0=float(p_val_g), y1=float(a_val_g),
+                                         fillcolor="#fef3c7", opacity=0.35, line_width=0,
+                                         annotation_text="Zona Precaución", annotation_position="top left",
+                                         annotation_font_color="#d97706", annotation_font_size=10)
+                        fig_ts.add_hrect(y0=float(a_val_g), y1=max(y_max * 1.15, float(a_val_g) * 1.1),
+                                         fillcolor="#fee2e2", opacity=0.35, line_width=0,
+                                         annotation_text="Zona Condenatorio", annotation_position="top left",
+                                         annotation_font_color="#dc2626", annotation_font_size=10)
 
-                for i, comp in enumerate(comp_list):
-                    ax = axes_flat[i]
+                    # Línea de tendencia
+                    fig_ts.add_trace(go.Scatter(
+                        x=ts_data["FECHA_INFORME"],
+                        y=ts_data[var_elegida],
+                        mode="lines+markers",
+                        name=var_elegida,
+                        line=dict(color="#94a3b8", width=2),
+                        marker=dict(color=colors_ts, size=10, line=dict(color="white", width=1.5)),
+                        hovertemplate=(
+                            "<b>%{x|%d %b %Y}</b><br>"
+                            + (f"{var_elegida}: " if len(var_elegida) < 25 else "Valor: ")
+                            + "%{y:.2f} " + unit_g + "<extra></extra>"
+                        ),
+                    ))
 
-                    if modo == "Límites por componente" and "Componente" in subset.columns:
-                        data_plot = df_calc[
-                            df_calc["COMPONENTE"].astype(str) == str(comp)
-                        ][var_p].dropna()
-                        row_lim = subset[subset["Componente"] == comp]
-                    else:
-                        data_plot = df_calc[var_p].dropna()
-                        row_lim   = subset
+                    # Líneas de límite
+                    if pd.notna(p_val_g):
+                        fig_ts.add_hline(y=float(p_val_g), line_dash="dash", line_color="#d97706", line_width=2,
+                                         annotation_text=f"Precaución {float(p_val_g):.1f} {unit_g}",
+                                         annotation_position="bottom right",
+                                         annotation_font_color="#d97706")
+                    if pd.notna(a_val_g):
+                        fig_ts.add_hline(y=float(a_val_g), line_dash="solid", line_color="#dc2626", line_width=2,
+                                         annotation_text=f"Condenatorio {float(a_val_g):.1f} {unit_g}",
+                                         annotation_position="bottom right",
+                                         annotation_font_color="#dc2626")
+                    if pd.notna(mean_g):
+                        fig_ts.add_hline(y=float(mean_g), line_dash="dot", line_color="#1a3a5c", line_width=1.5,
+                                         annotation_text=f"Media {float(mean_g):.1f}",
+                                         annotation_position="top right",
+                                         annotation_font_color="#1a3a5c")
 
-                    if row_lim.empty or data_plot.empty:
-                        ax.text(0.5, 0.5, "Sin datos", ha="center", va="center",
-                                transform=ax.transAxes, color="#9ca3af")
-                        ax.set_title(str(comp)[:40], fontsize=9)
-                        continue
+                    fig_ts.update_layout(
+                        height=380,
+                        margin=dict(t=30, r=30, b=50, l=60),
+                        plot_bgcolor="#fafafa",
+                        paper_bgcolor="white",
+                        font=dict(family="Segoe UI, Inter, sans-serif", size=12),
+                        xaxis=dict(title="Fecha de informe", showgrid=True, gridcolor="#f0f0f0", tickangle=-30),
+                        yaxis=dict(title=unit_g if unit_g else "Valor", showgrid=True, gridcolor="#f0f0f0"),
+                        hovermode="x unified",
+                        showlegend=False,
+                    )
+                    st.plotly_chart(fig_ts, use_container_width=True)
+                    st.caption(
+                        "🔵 Normal · 🟡 Supera Precaución · 🔴 Supera Condenatorio  "
+                        "— cada punto es una muestra de análisis de aceite"
+                    )
 
-                    row_lim = row_lim.iloc[0]
-                    p_val   = row_lim["Límite de precaución"]
-                    a_val   = row_lim["Límite condenatorio"]
-                    mean_v  = row_lim["Promedio"]
+            # ── Tab 2: Distribución ─────────────────────────────────
+            with tab_dist:
+                if ts_data.empty:
+                    st.info("No hay datos para mostrar.")
+                else:
+                    fig_dist = go.Figure()
+                    fig_dist.add_trace(go.Histogram(
+                        x=ts_data[var_elegida],
+                        nbinsx=min(25, max(6, len(ts_data) // 3 + 1)),
+                        marker_color="#3b82f6",
+                        marker_line_color="white",
+                        marker_line_width=0.8,
+                        opacity=0.75,
+                        name="Frecuencia",
+                        hovertemplate="Valor: %{x:.1f}<br>Frecuencia: %{y}<extra></extra>",
+                    ))
+                    if pd.notna(p_val_g):
+                        fig_dist.add_vline(x=float(p_val_g), line_dash="dash", line_color="#d97706", line_width=2.5,
+                                           annotation_text=f"Precaución: {float(p_val_g):.1f}",
+                                           annotation_position="top", annotation_font_color="#d97706")
+                    if pd.notna(a_val_g):
+                        fig_dist.add_vline(x=float(a_val_g), line_dash="solid", line_color="#dc2626", line_width=2.5,
+                                           annotation_text=f"Condenatorio: {float(a_val_g):.1f}",
+                                           annotation_position="top", annotation_font_color="#dc2626")
+                    if pd.notna(mean_g):
+                        fig_dist.add_vline(x=float(mean_g), line_dash="dot", line_color="#1a3a5c", line_width=2,
+                                           annotation_text=f"Media: {float(mean_g):.1f}",
+                                           annotation_position="top", annotation_font_color="#1a3a5c")
 
-                    n_bins = min(25, max(5, len(data_plot) // 3 + 1))
-                    ax.hist(data_plot, bins=n_bins, color="#3b82f6", alpha=0.65,
-                            edgecolor="white", linewidth=0.5)
+                    fig_dist.update_layout(
+                        height=360,
+                        margin=dict(t=30, r=30, b=50, l=60),
+                        plot_bgcolor="#fafafa",
+                        paper_bgcolor="white",
+                        font=dict(family="Segoe UI, Inter, sans-serif", size=12),
+                        xaxis=dict(title=unit_g if unit_g else "Valor", showgrid=True, gridcolor="#f0f0f0"),
+                        yaxis=dict(title="Número de muestras", showgrid=True, gridcolor="#f0f0f0"),
+                        showlegend=False,
+                        bargap=0.05,
+                    )
+                    st.plotly_chart(fig_dist, use_container_width=True)
+                    st.caption(
+                        "Cada barra representa cuántas muestras tuvieron ese rango de valores. "
+                        "La mayoría debería estar a la izquierda de la línea de Precaución."
+                    )
 
-                    handles = []
-                    if pd.notna(p_val):
-                        ax.axvline(p_val, color="#d97706", lw=2, ls="--")
-                        handles.append(mpatches.Patch(color="#d97706",
-                                                       label=f"Precaución: {p_val:.1f}"))
-                    if pd.notna(a_val):
-                        ax.axvline(a_val, color="#dc2626", lw=2, ls="-")
-                        handles.append(mpatches.Patch(color="#dc2626",
-                                                       label=f"Condenatorio: {a_val:.1f}"))
-                    if pd.notna(mean_v):
-                        ax.axvline(mean_v, color="#1a3a5c", lw=1.5, ls=":")
-                        handles.append(mpatches.Patch(color="#1a3a5c",
-                                                       label=f"Media: {mean_v:.1f}"))
-
-                    if handles:
-                        ax.legend(handles=handles, fontsize=7, loc="upper right",
-                                  framealpha=0.85, edgecolor="none")
-
-                    ax.set_title(str(comp)[:45], fontsize=9, color="#374151")
-                    ax.set_xlabel(unit if unit else "", fontsize=8, color="#6b7280")
-                    ax.set_ylabel("Frecuencia", fontsize=8, color="#6b7280")
-                    ax.tick_params(labelsize=7)
-                    ax.spines[["top", "right"]].set_visible(False)
-                    ax.grid(axis="y", alpha=0.3, linewidth=0.5)
-
-                for j in range(len(comp_list), len(axes_flat)):
-                    axes_flat[j].set_visible(False)
-
-                plt.tight_layout()
-                st.pyplot(fig, use_container_width=True)
-                plt.close(fig)
     elif len(vars_sel) > max_vars_plot:
         st.info(f"Las gráficas se muestran cuando hay ≤ {max_vars_plot} variables seleccionadas.")
 
